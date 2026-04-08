@@ -1,0 +1,19 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="PythonPi" type="PythonConfigurationType" factoryName="Python">
+    <module name="PySpark" />
+    <option name="SCRIPT_NAME" value="$PROJECT_DIR$/examples/pi.py" />
+    <option name="PARAMETERS" value="10" />
+    <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$" />
+    <option name="ADD_CONTENT_ROOTS" value="true" />
+    <option name="ADD_SOURCE_ROOTS" value="true" />
+    <option name="EMULATE_TERMINAL" value="true" />
+    <option name="SDK_HOME" value="/opt/anaconda3/bin/python" />
+    <envs>
+      <env name="JAVA_HOME" value="/Users/Fitzgerald/Applications/java/current/Contents/Home" />
+      <env name="SPARK_HOME" value="/Users/Fitzgerald/Applications/spark/current" />
+      <env name="PYSPARK_PYTHON" value="/opt/anaconda3/bin/python" />
+      <env name="PYSPARK_DRIVER_PYTHON" value="/opt/anaconda3/bin/python" />
+    </envs>
+    <method v="2" />
+  </configuration>
+</component>

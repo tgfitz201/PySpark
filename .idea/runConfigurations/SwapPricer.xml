@@ -1,0 +1,21 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="SwapPricer" type="PythonConfigurationType" factoryName="Python">
+    <module name="PySpark" />
+    <option name="SCRIPT_NAME" value="$PROJECT_DIR$/examples/swaption_pricer.py" />
+    <option name="PARAMETERS" value="" />
+    <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$" />
+    <option name="ADD_CONTENT_ROOTS" value="true" />
+    <option name="ADD_SOURCE_ROOTS" value="true" />
+    <option name="EMULATE_TERMINAL" value="true" />
+    <option name="SDK_HOME" value="/opt/anaconda3/bin/python" />
+    <envs>
+      <env name="JAVA_HOME" value="/usr/local/opt/openjdk@17" />
+      <env name="SPARK_HOME" value="/opt/anaconda3/lib/python3.13/site-packages/pyspark" />
+      <env name="PATH" value="/usr/local/opt/openjdk@17/bin:/opt/anaconda3/bin:/usr/local/bin:/usr/bin:/bin" />
+      <env name="PYSPARK_PYTHON" value="/opt/anaconda3/bin/python" />
+      <env name="PYSPARK_DRIVER_PYTHON" value="/opt/anaconda3/bin/python" />
+      <env name="PYTHONUNBUFFERED" value="1" />
+    </envs>
+    <method v="2" />
+  </configuration>
+</component>

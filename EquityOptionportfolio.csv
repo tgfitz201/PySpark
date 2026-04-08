@@ -1,0 +1,15 @@
+metric,value
+Instrument,EQ_OPT
+Trade Count,333
+Error Count,0
+Total Notional,"$1,457,000,000"
+Total NPV,"$5,552,632.16"
+Total DV01,"$-4,130.20"
+Buy,162
+Sell,171
+Total Premium,"$5,552,632.16"
+Total Vega,"$1,194.12"
+Total Delta,"$-106,309.74"
+Total Gamma,$364.5150
+Total Theta,"$3,606,201.89"
+Total Rho,"$-4,130.20"

@@ -1,0 +1,14 @@
+metric,value
+trades,100.0
+payers,48.0
+receivers,52.0
+total_notional,1594000000.0
+total_fixed_npv,-739884.3542768057
+total_float_npv,14919395.239183154
+total_swap_npv,14179510.884906365
+avg_par_rate,0.04522158612530855
+avg_fixed_rate,0.042976
+avg_dv01,-153.9331520542372
+avg_duration,113.68415973950987
+payer_total_npv,23664858.31757546
+receiver_total_npv,-9485347.432669096

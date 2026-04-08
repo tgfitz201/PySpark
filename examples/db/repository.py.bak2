@@ -1,0 +1,383 @@
+"""
+db/repository.py
+================
+TradeRepository — SQLite-backed CRUD store for all TradeBase subclasses.
+
+Schema
+------
+  trades          : one row per trade (trade_id PK + full JSON blob)
+  trade_legs      : normalised legs — one row per leg per trade
+  pricing_results : time-stamped pricing runs with all greeks
+
+Usage
+-----
+>>> from db import TradeRepository
+>>> repo = TradeRepository("trades.db")
+>>> repo.upsert(swap)
+>>> t = repo.get("IRS-001")
+>>> repo.save_results(result_df, run_id="RUN-001")
+>>> df = repo.get_results("IRS-001")
+>>> repo.delete("IRS-001")
+>>> all_swaps = repo.list_all(trade_type="VanillaSwap")
+"""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+from contextlib import contextmanager
+from datetime import date, datetime
+from typing import Dict, List, Optional
+
+import pandas as pd
+
+
+# ── DDL ───────────────────────────────────────────────────────────────────────
+
+_DDL = """
+-- Master trade table: one row per trade, keyed by trade_id
+CREATE TABLE IF NOT EXISTS trades (
+    trade_id        TEXT    PRIMARY KEY,
+    trade_type      TEXT    NOT NULL,
+    book            TEXT    DEFAULT '',
+    counterparty    TEXT    DEFAULT '',
+    valuation_date  TEXT,
+    direction       TEXT    DEFAULT '',
+    trade_json      TEXT    NOT NULL,       -- full toJson() blob (source of truth)
+    created_at      TEXT    DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now')),
+    updated_at      TEXT    DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now'))
+);
+
+-- Normalised leg rows — one row per leg per trade (for querying leg-level data)
+CREATE TABLE IF NOT EXISTS trade_legs (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    trade_id    TEXT    NOT NULL REFERENCES trades(trade_id) ON DELETE CASCADE,
+    leg_index   INTEGER NOT NULL,
+    leg_type    TEXT    NOT NULL,
+    leg_json    TEXT    NOT NULL,           -- single leg JSON dict
+    UNIQUE(trade_id, leg_index)
+);
+
+-- Pricing results: one row per trade per run; accumulates history
+CREATE TABLE IF NOT EXISTS pricing_results (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    trade_id        TEXT    NOT NULL,
+    run_id          TEXT    NOT NULL DEFAULT 'DEFAULT',
+    run_timestamp   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now')),
+    instrument      TEXT,
+    book            TEXT,
+    counterparty    TEXT,
+    direction       TEXT,
+    tenor_y         REAL,
+    notional        REAL,
+    coupon_rate     REAL,
+    -- P&L / value
+    swap_npv        REAL,
+    par_rate        REAL,
+    clean_price     REAL,
+    accrued         REAL,
+    -- leg decomposition
+    fixed_npv       REAL,
+    float_npv       REAL,
+    -- interest rate greeks
+    dv01            REAL,
+    duration        REAL,
+    pv01            REAL,
+    convexity       REAL,
+    -- vol greeks
+    vega            REAL,
+    theta           REAL,
+    -- equity greeks
+    delta           REAL,
+    -- credit greeks
+    cr01            REAL,
+    jump_to_default REAL,
+    -- metadata
+    error           TEXT    DEFAULT '',
+    FOREIGN KEY (trade_id) REFERENCES trades(trade_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_results_trade ON pricing_results(trade_id);
+CREATE INDEX IF NOT EXISTS idx_results_run   ON pricing_results(run_id);
+CREATE INDEX IF NOT EXISTS idx_legs_trade    ON trade_legs(trade_id);
+"""
+
+
+# ── Repository ────────────────────────────────────────────────────────────────
+
+class TradeRepository:
+    """
+    SQLite-backed CRUD repository for all TradeBase subclasses.
+
+    Parameters
+    ----------
+    db_path : str
+        Path to SQLite database file.  Use ":memory:" for in-process testing.
+    """
+
+    def __init__(self, db_path: str = ":memory:") -> None:
+        self.db_path = db_path
+        self._conn = sqlite3.connect(db_path, check_same_thread=False)
+        self._conn.execute("PRAGMA foreign_keys = ON")
+        self._conn.execute("PRAGMA journal_mode = WAL")
+        self._ensure_schema()
+
+    # ── lifecycle ─────────────────────────────────────────────────────────────
+
+    def close(self) -> None:
+        self._conn.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
+
+    @contextmanager
+    def _tx(self):
+        """Context manager that commits on success or rolls back on error."""
+        try:
+            yield self._conn
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
+
+    def _ensure_schema(self) -> None:
+        self._conn.executescript(_DDL)
+        self._conn.commit()
+
+    # ── CREATE / UPDATE ───────────────────────────────────────────────────────
+
+    def upsert(self, trade) -> None:
+        """
+        Insert or replace a trade (and its legs) in the database.
+
+        Parameters
+        ----------
+        trade : TradeBase subclass
+        """
+        from models.trade_base import TradeBase  # avoid circular at module level
+        trade_json = trade.toJson()
+        val_date_str = (trade.valuation_date.isoformat()
+                        if isinstance(trade.valuation_date, date) else "")
+        direction_str = (trade.direction.value
+                         if hasattr(trade.direction, "value") else str(trade.direction))
+        with self._tx():
+            self._conn.execute(
+                """
+                INSERT INTO trades
+                    (trade_id, trade_type, book, counterparty, valuation_date,
+                     direction, trade_json, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?,  strftime('%Y-%m-%dT%H:%M:%S','now'))
+                ON CONFLICT(trade_id) DO UPDATE SET
+                    trade_type     = excluded.trade_type,
+                    book           = excluded.book,
+                    counterparty   = excluded.counterparty,
+                    valuation_date = excluded.valuation_date,
+                    direction      = excluded.direction,
+                    trade_json     = excluded.trade_json,
+                    updated_at     = excluded.updated_at
+                """,
+                (trade.trade_id, trade._trade_type, trade.book, trade.counterparty,
+                 val_date_str, direction_str, trade_json),
+            )
+            # Refresh leg rows
+            self._conn.execute("DELETE FROM trade_legs WHERE trade_id = ?",
+                               (trade.trade_id,))
+            for idx, leg in enumerate(trade.legs):
+                from dataclasses import fields, asdict
+                leg_dict = {f.name: TradeBase._serialize(getattr(leg, f.name))
+                            for f in fields(leg)}
+                self._conn.execute(
+                    """
+                    INSERT INTO trade_legs (trade_id, leg_index, leg_type, leg_json)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (trade.trade_id, idx, leg.leg_type, json.dumps(leg_dict)),
+                )
+
+    def upsert_many(self, trades: list) -> int:
+        """Bulk upsert; returns count."""
+        for t in trades:
+            self.upsert(t)
+        return len(trades)
+
+    # ── READ ─────────────────────────────────────────────────────────────────
+
+    def get(self, trade_id: str):
+        """Return a single trade by trade_id, or None if not found."""
+        from models.trade_base import TradeBase
+        row = self._conn.execute(
+            "SELECT trade_json FROM trades WHERE trade_id = ?", (trade_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        return TradeBase.fromJson(row[0])
+
+    def list_all(self, trade_type: Optional[str] = None,
+                 book: Optional[str] = None) -> list:
+        """Return all trades, optionally filtered by trade_type and/or book."""
+        from models.trade_base import TradeBase
+        sql = "SELECT trade_json FROM trades WHERE 1=1"
+        params: list = []
+        if trade_type:
+            sql += " AND trade_type = ?"
+            params.append(trade_type)
+        if book:
+            sql += " AND book = ?"
+            params.append(book)
+        sql += " ORDER BY trade_id"
+        rows = self._conn.execute(sql, params).fetchall()
+        return [TradeBase.fromJson(r[0]) for r in rows]
+
+    def count(self, trade_type: Optional[str] = None) -> int:
+        """Count stored trades."""
+        if trade_type:
+            return self._conn.execute(
+                "SELECT COUNT(*) FROM trades WHERE trade_type = ?", (trade_type,)
+            ).fetchone()[0]
+        return self._conn.execute("SELECT COUNT(*) FROM trades").fetchone()[0]
+
+    def exists(self, trade_id: str) -> bool:
+        return self._conn.execute(
+            "SELECT 1 FROM trades WHERE trade_id = ?", (trade_id,)
+        ).fetchone() is not None
+
+    # ── DELETE ────────────────────────────────────────────────────────────────
+
+    def delete(self, trade_id: str) -> bool:
+        """Delete a trade and its legs. Returns True if a row was deleted."""
+        with self._tx():
+            cur = self._conn.execute(
+                "DELETE FROM trades WHERE trade_id = ?", (trade_id,)
+            )
+        return cur.rowcount > 0
+
+    def delete_all(self) -> int:
+        """Delete all trades. Returns count deleted."""
+        with self._tx():
+            n = self._conn.execute("SELECT COUNT(*) FROM trades").fetchone()[0]
+            self._conn.execute("DELETE FROM trade_legs")
+            self._conn.execute("DELETE FROM trades")
+        return n
+
+    # ── PRICING RESULTS ───────────────────────────────────────────────────────
+
+    _RESULT_COLS = [
+        "trade_id", "instrument", "book", "counterparty", "direction",
+        "tenor_y", "notional", "coupon_rate",
+        "swap_npv", "par_rate", "clean_price", "accrued",
+        "fixed_npv", "float_npv",
+        "dv01", "duration", "pv01", "convexity",
+        "vega", "theta", "delta", "cr01", "jump_to_default",
+        "error",
+    ]
+
+    def save_results(self, df: pd.DataFrame, run_id: str = "DEFAULT") -> int:
+        """
+        Persist a pricing results DataFrame to pricing_results table.
+
+        Parameters
+        ----------
+        df     : DataFrame from run_pricing() (must contain trade_id column)
+        run_id : identifier for this pricing run  e.g. "EOD-2025-01-15"
+
+        Returns
+        -------
+        Number of rows inserted.
+        """
+        records = []
+        ts = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
+        for _, row in df.iterrows():
+            rec = {"run_id": run_id, "run_timestamp": ts}
+            for col in self._RESULT_COLS:
+                rec[col] = row.get(col, None)
+            records.append(rec)
+
+        if not records:
+            return 0
+
+        cols = ["run_id", "run_timestamp"] + self._RESULT_COLS
+        placeholders = ",".join("?" * len(cols))
+        sql = f"INSERT INTO pricing_results ({','.join(cols)}) VALUES ({placeholders})"
+        with self._tx():
+            self._conn.executemany(
+                sql, [[r.get(c) for c in cols] for r in records]
+            )
+        return len(records)
+
+    def get_results(self, trade_id: Optional[str] = None,
+                    run_id: Optional[str] = None) -> pd.DataFrame:
+        """
+        Retrieve pricing results as a DataFrame.
+
+        Parameters
+        ----------
+        trade_id : filter by trade (optional)
+        run_id   : filter by run   (optional)
+        """
+        sql = "SELECT * FROM pricing_results WHERE 1=1"
+        params: list = []
+        if trade_id:
+            sql += " AND trade_id = ?"
+            params.append(trade_id)
+        if run_id:
+            sql += " AND run_id = ?"
+            params.append(run_id)
+        sql += " ORDER BY trade_id, run_timestamp"
+        cur = self._conn.execute(sql, params)
+        cols = [d[0] for d in cur.description]
+        rows = cur.fetchall()
+        return pd.DataFrame(rows, columns=cols)
+
+    def get_latest_results(self, run_id: Optional[str] = None) -> pd.DataFrame:
+        """Return the most recent pricing run's results."""
+        if run_id:
+            return self.get_results(run_id=run_id)
+        # Get latest run_id
+        latest = self._conn.execute(
+            "SELECT run_id FROM pricing_results ORDER BY run_timestamp DESC LIMIT 1"
+        ).fetchone()
+        if latest is None:
+            return pd.DataFrame()
+        return self.get_results(run_id=latest[0])
+
+    # ── LEG QUERIES ───────────────────────────────────────────────────────────
+
+    def get_legs(self, trade_id: str) -> list:
+        """Return raw leg dicts for a trade (without full deserialization)."""
+        rows = self._conn.execute(
+            "SELECT leg_index, leg_type, leg_json FROM trade_legs "
+            "WHERE trade_id = ? ORDER BY leg_index",
+            (trade_id,),
+        ).fetchall()
+        return [{"leg_index": r[0], "leg_type": r[1], **json.loads(r[2])} for r in rows]
+
+    def legs_summary(self) -> pd.DataFrame:
+        """Return a summary of all stored legs across all trades."""
+        cur = self._conn.execute(
+            "SELECT trade_id, leg_index, leg_type FROM trade_legs ORDER BY trade_id, leg_index"
+        )
+        return pd.DataFrame(cur.fetchall(), columns=["trade_id", "leg_index", "leg_type"])
+
+    # ── PORTFOLIO QUERIES ─────────────────────────────────────────────────────
+
+    def trade_summary(self) -> pd.DataFrame:
+        """Return a high-level summary of all stored trades."""
+        cur = self._conn.execute(
+            """
+            SELECT t.trade_type, t.book, t.direction,
+                   COUNT(*) as count,
+                   GROUP_CONCAT(t.trade_id, ', ') as trade_ids
+            FROM trades t
+            GROUP BY t.trade_type, t.book, t.direction
+            ORDER BY t.trade_type, t.book
+            """
+        )
+        return pd.DataFrame(cur.fetchall(),
+                            columns=["trade_type","book","direction","count","trade_ids"])
+
+    def __repr__(self) -> str:
+        n = self.count()
+        return f"TradeRepository(db={self.db_path!r}, trades={n})"

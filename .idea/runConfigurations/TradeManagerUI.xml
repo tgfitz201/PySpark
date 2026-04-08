@@ -1,0 +1,16 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="TradeManagerUI" type="PythonConfigurationType" factoryName="Python">
+    <module name="PySpark" />
+    <option name="SCRIPT_NAME" value="/opt/anaconda3/bin/streamlit" />
+    <option name="PARAMETERS" value="run $PROJECT_DIR$/examples/gui/app.py --server.port 8502 --server.headless false" />
+    <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/examples/gui" />
+    <option name="ADD_CONTENT_ROOTS" value="true" />
+    <option name="ADD_SOURCE_ROOTS" value="true" />
+    <option name="EMULATE_TERMINAL" value="true" />
+    <option name="SDK_HOME" value="/opt/anaconda3/bin/python" />
+    <envs>
+      <env name="PYTHONUNBUFFERED" value="1" />
+    </envs>
+    <method v="2" />
+  </configuration>
+</component>

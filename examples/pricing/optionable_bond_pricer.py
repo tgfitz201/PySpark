@@ -153,13 +153,38 @@ def _price_callable_bond(trade, curve_df: pd.DataFrame) -> Dict[str, Any]:
         call_schedule,
     )
     cb_vg.setPricingEngine(eng_vg)
-    vega = cb_vg.NPV() - npv_usd   # per 1% vol increase
+    vega = sign * (cb_vg.NPV() - npv_usd)   # signed by direction
+
+    # ── Theta: 1-day price decay ──────────────────────────────────────────
+    theta = _NAN
+    try:
+        ql_val_1d = ql_val + 1
+        ql.Settings.instance().evaluationDate = ql_val_1d
+        sofr_1d = build_sofr_curve(ql_val_1d, curve_df)
+        hw_1d   = ql.HullWhite(sofr_1d, a=0.1, sigma=hw_vol)
+        eng_1d  = ql.TreeCallableFixedRateBondEngine(hw_1d, 40)
+        cb_1d   = ql.CallableFixedRateBond(
+            bl.settlement_days, notional, schedule,
+            [coupon_rate], dc, bdc, bl.redemption, issue_dt, call_schedule,
+        )
+        cb_1d.setPricingEngine(eng_1d)
+        theta = sign * (cb_1d.NPV() - npv_usd)
+    except Exception:
+        pass
+    finally:
+        ql.Settings.instance().evaluationDate = ql_val   # always restore
+
+    # ── Gamma and Rho reuse existing rate bumps ────────────────────────────
+    # gamma = d²V/dr²  (dollar curvature of callable bond price w.r.t. rate)
+    gamma = sign * (npv_m1 + npv_p1 - 2.0 * npv_usd) / (1e-4 ** 2)
+    # rho   = dV/dr per 1% parallel SOFR shift  (= DV01 × 100)
+    rho   = sign * raw_dv01 * 100.0
 
     return dict(fixed_npv=bullet_npv, float_npv=_NAN, swap_npv=npv_usd,
                 par_rate=ytm, clean_price=clean_usd, accrued=accrued,
                 dv01=dv01, duration=duration, pv01=pv01, convexity=convexity,
-                vega=vega, theta=_NAN, delta=option_value,
-                gamma=_NAN, rho=_NAN,
+                vega=vega, theta=theta, delta=option_value,
+                gamma=gamma, rho=rho,
                 cr01=_NAN, jump_to_default=_NAN, error="")
 
 
@@ -292,8 +317,105 @@ def _price_convertible_bond(trade, curve_df: pd.DataFrame) -> Dict[str, Any]:
     pv01 = dv01 / (notional / 1e6) if notional > 0 else _NAN
     convexity = (npv_up + npv_dn - 2 * straight_npv) / (straight_npv * (1e-4) ** 2) if straight_npv > 0 else _NAN
 
-    vega = _NAN
+    # ── Option Greeks (convertible-specific) ──────────────────────────────
+    # equity_delta stored in `gamma` field: dV/dS — sensitivity to stock price
+    # vega: dV/d(equity_vol)   theta: 1-day time decay   rho: rate sensitivity
+    vega         = _NAN
     equity_delta = _NAN
+    theta        = _NAN
+    rho          = dv01 * 100.0   # per 1% parallel SOFR shift
+
+    if conv_bond_ok:
+        # Re-create lightweight handles (cheap QL constructors — used for Greek bumps)
+        _rsk_h = ql.Handle(ql.SimpleQuote(credit_spread))
+        _spot_h = ql.Handle(ql.SimpleQuote(stock_price))
+        _div_h  = ql.Handle(ql.FlatForward(ql_val, div_yield, ql.Actual365Fixed()))
+        _ex     = ql.AmericanExercise(ql_val, mat_dt)
+        _divs   = ql.DividendSchedule()
+        _calls  = ql.CallabilitySchedule()
+
+        # Vega: d(NPV)/d(equity_vol) via +1% vol bump
+        try:
+            _vol_vg  = ql.Handle(ql.BlackConstantVol(ql_val, ql.NullCalendar(),
+                                                     eq_vol + 0.01, ql.Actual365Fixed()))
+            _proc_vg = ql.BlackScholesMertonProcess(_spot_h, _div_h, sofr, _vol_vg)
+            _cb_vg   = ql.ConvertibleFixedCouponBond(
+                _ex, conversion_ratio, _divs, _calls, _rsk_h,
+                issue_dt, bl.settlement_days, [coupon_rate], dc, schedule, bl.redemption,
+            )
+            _cb_vg.setPricingEngine(ql.BinomialConvertibleEngine(_proc_vg, "crr", 200))
+            vega = sign * (_cb_vg.NPV() - npv_usd)
+        except Exception:
+            pass
+
+        # Equity delta: d(NPV)/d(S) via ±5% central difference (larger bump for binomial stability)
+        try:
+            h_s     = 0.05
+            _vol_h  = ql.Handle(ql.BlackConstantVol(ql_val, ql.NullCalendar(),
+                                                    eq_vol, ql.Actual365Fixed()))
+            _sp_up  = ql.Handle(ql.SimpleQuote(stock_price * (1.0 + h_s)))
+            _pr_up  = ql.BlackScholesMertonProcess(_sp_up, _div_h, sofr, _vol_h)
+            _cb_up  = ql.ConvertibleFixedCouponBond(
+                _ex, conversion_ratio, _divs, _calls, _rsk_h,
+                issue_dt, bl.settlement_days, [coupon_rate], dc, schedule, bl.redemption,
+            )
+            _cb_up.setPricingEngine(ql.BinomialConvertibleEngine(_pr_up, "crr", 200))
+            npv_s_up = _cb_up.NPV()
+
+            _sp_dn  = ql.Handle(ql.SimpleQuote(stock_price * (1.0 - h_s)))
+            _pr_dn  = ql.BlackScholesMertonProcess(_sp_dn, _div_h, sofr, _vol_h)
+            _cb_dn  = ql.ConvertibleFixedCouponBond(
+                _ex, conversion_ratio, _divs, _calls, _rsk_h,
+                issue_dt, bl.settlement_days, [coupon_rate], dc, schedule, bl.redemption,
+            )
+            _cb_dn.setPricingEngine(ql.BinomialConvertibleEngine(_pr_dn, "crr", 200))
+            npv_s_dn = _cb_dn.NPV()
+
+            equity_delta = sign * (npv_s_up - npv_s_dn) / (2.0 * h_s * stock_price)
+        except Exception:
+            pass
+
+        # Theta: 1-day time decay
+        try:
+            ql_val_1d = ql_val + 1
+            ql.Settings.instance().evaluationDate = ql_val_1d
+            sofr_1d  = build_sofr_curve(ql_val_1d, curve_df)
+            _div_1d  = ql.Handle(ql.FlatForward(ql_val_1d, div_yield, ql.Actual365Fixed()))
+            _vol_1d  = ql.Handle(ql.BlackConstantVol(ql_val_1d, ql.NullCalendar(),
+                                                     eq_vol, ql.Actual365Fixed()))
+            _proc_1d = ql.BlackScholesMertonProcess(_spot_h, _div_1d, sofr_1d, _vol_1d)
+            _cb_1d   = ql.ConvertibleFixedCouponBond(
+                _ex, conversion_ratio, _divs, _calls, _rsk_h,
+                issue_dt, bl.settlement_days, [coupon_rate], dc, schedule, bl.redemption,
+            )
+            _cb_1d.setPricingEngine(ql.BinomialConvertibleEngine(_proc_1d, "crr", 200))
+            theta = sign * (_cb_1d.NPV() - npv_usd)
+        except Exception:
+            pass
+        finally:
+            ql.Settings.instance().evaluationDate = ql_val   # always restore
+
+    else:
+        # Fallback: Black-Scholes analytical Greeks on the embedded call option
+        T_cv = max(0.01, (bl.end_date - trade.valuation_date).days / 365.25)
+        r_cv = ytm if (ytm == ytm and math.isfinite(ytm)) else 0.045
+        if conv_price > 0 and eq_vol > 0 and stock_price > 0:
+            import math as _m
+            from scipy.stats import norm as _norm
+            sqrt_T  = _m.sqrt(T_cv)
+            d1 = (_m.log(stock_price / conv_price) + (r_cv - div_yield + 0.5 * eq_vol**2) * T_cv) / (eq_vol * sqrt_T)
+            d2 = d1 - eq_vol * sqrt_T
+            n_d1  = _norm.pdf(d1)
+            exp_q = _m.exp(-div_yield * T_cv)
+            exp_r = _m.exp(-r_cv * T_cv)
+            # Per-share analytical Greeks, then scale by conversion_ratio
+            equity_delta = sign * conversion_ratio * exp_q * _norm.cdf(d1)
+            vega         = sign * conversion_ratio * stock_price * exp_q * n_d1 * sqrt_T * 0.01  # per 1% vol
+            theta        = sign * conversion_ratio * (
+                -stock_price * exp_q * n_d1 * eq_vol / (2.0 * sqrt_T)
+                - r_cv * conv_price * exp_r * _norm.cdf(d2)
+                + div_yield * stock_price * exp_q * _norm.cdf(d1)
+            ) / 365.0   # per calendar day
 
     return dict(
         swap_npv    = npv_usd,
@@ -306,9 +428,9 @@ def _price_convertible_bond(trade, curve_df: pd.DataFrame) -> Dict[str, Any]:
         convexity   = convexity,
         delta       = option_value,
         vega        = vega,
-        theta       = _NAN,
-        gamma       = equity_delta,
-        rho         = _NAN,
+        theta       = theta,
+        gamma       = equity_delta,   # dV/dS: equity sensitivity of the convertible
+        rho         = rho,
         fixed_npv   = straight_npv,
         float_npv   = option_value,
         cr01        = _NAN,

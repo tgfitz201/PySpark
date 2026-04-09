@@ -103,23 +103,36 @@ def _price_option(trade, curve_df: pd.DataFrame) -> Dict[str, Any]:
     finally:
         ql.Settings.instance().evaluationDate = ql_val  # always restore
 
-    # Delta: d_premium / d_underlying_rate  (lower strike by 1bp)
+    # Delta + Gamma: central finite difference on strike (∂V/∂K, ∂²V/∂K²)
+    h = 1e-4
     delta = _NAN
+    gamma = _NAN
     try:
-        strike_lo = ol.strike - 1e-4
-        under_lo  = ql.VanillaSwap(stype, ol.notional, fixed_sch, strike_lo, dc_fixed,
-                                   float_sch, sofr_idx, 0.0, dc_float)
-        swptn_lo  = ql.Swaption(under_lo, exercise)
+        under_lo = ql.VanillaSwap(stype, ol.notional, fixed_sch, ol.strike - h, dc_fixed,
+                                  float_sch, sofr_idx, 0.0, dc_float)
+        swptn_lo = ql.Swaption(under_lo, exercise)
         swptn_lo.setPricingEngine(_make_engine(sofr, flat_vol))
-        delta = sign * (swptn_lo.NPV() - premium) / 1e-4
+        V_lo = swptn_lo.NPV()
+
+        under_hi = ql.VanillaSwap(stype, ol.notional, fixed_sch, ol.strike + h, dc_fixed,
+                                  float_sch, sofr_idx, 0.0, dc_float)
+        swptn_hi = ql.Swaption(under_hi, exercise)
+        swptn_hi.setPricingEngine(_make_engine(sofr, flat_vol))
+        V_hi = swptn_hi.NPV()
+
+        delta = sign * (V_lo - premium) / h           # ∂V/∂K (lower K → higher payer premium)
+        gamma = sign * (V_hi - 2.0 * premium + V_lo) / (h ** 2)   # ∂²V/∂K²
     except Exception:
         pass
+
+    # Rho: parallel SOFR sensitivity scaled to 1% (= DV01 × 100)
+    rho = dv01 * 100.0
 
     return dict(fixed_npv=_NAN, float_npv=_NAN, swap_npv=net_pnl,
                 par_rate=atm_rate, clean_price=_NAN, accrued=_NAN,
                 dv01=dv01, duration=duration, pv01=pv01, convexity=_NAN,
                 vega=vega, theta=theta, delta=delta,
-                gamma=_NAN, rho=_NAN,
+                gamma=gamma, rho=rho,
                 cr01=_NAN, jump_to_default=_NAN, error="")
 
 
@@ -236,23 +249,37 @@ def _price_irs_swaption(trade, curve_df: pd.DataFrame) -> Dict[str, Any]:
     finally:
         ql.Settings.instance().evaluationDate = ql_val
 
-    # Delta: d(premium)/d(swap_rate) via -1bp strike
+    # Delta + Gamma: central finite difference on strike (∂V/∂K, ∂²V/∂K²)
+    h = 1e-4
     delta = _NAN
+    gamma = _NAN
     try:
-        under_lo = ql.VanillaSwap(stype, notl, fixed_sch, strike - 1e-4, dc_fixed,
+        under_lo = ql.VanillaSwap(stype, notl, fixed_sch, strike - h, dc_fixed,
                                   float_sch, sofr_idx, 0.0, dc_float)
         swptn_lo = ql.Swaption(under_lo, exercise)
         swptn_lo.setPricingEngine(_engine(sofr, flat_vol))
-        delta = sign * (swptn_lo.NPV() - premium) / 1e-4
+        V_lo = swptn_lo.NPV()
+
+        under_hi = ql.VanillaSwap(stype, notl, fixed_sch, strike + h, dc_fixed,
+                                  float_sch, sofr_idx, 0.0, dc_float)
+        swptn_hi = ql.Swaption(under_hi, exercise)
+        swptn_hi.setPricingEngine(_engine(sofr, flat_vol))
+        V_hi = swptn_hi.NPV()
+
+        delta = sign * (V_lo - premium) / h           # ∂V/∂K
+        gamma = sign * (V_hi - 2.0 * premium + V_lo) / (h ** 2)   # ∂²V/∂K²
     except Exception:
         pass
+
+    # Rho: parallel SOFR sensitivity scaled to 1% (= DV01 × 100)
+    rho = dv01 * 100.0
 
     return dict(
         fixed_npv=fixed_npv_, float_npv=float_npv_, swap_npv=net_pnl,
         par_rate=atm_rate, clean_price=_NAN, accrued=_NAN,
         dv01=dv01, duration=duration, pv01=pv01, convexity=_NAN,
         vega=vega, theta=theta, delta=delta,
-        gamma=_NAN, rho=_NAN,
+        gamma=gamma, rho=rho,
         cr01=_NAN, jump_to_default=_NAN, error="",
     )
 

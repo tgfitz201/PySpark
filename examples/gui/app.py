@@ -27,16 +27,17 @@ MAX_TREE  = 50   # trades shown per book in tree
 LEG_ICONS  = {"FIXED":"🔒","FLOAT":"🌊","BOND":"📄","OPTION":"⚙️",
                "EQUITY":"📈","CREDIT":"🛡️","EQUITY_OPTION":"🎯"}
 INST_ICONS = {
+    # Keys match the trade_type registry strings stored in DB / returned by REST
     "InterestRateSwap": "🔄",
     "CrossCurrencySwap": "💱",
     "Bond": "📄",
     "AssetSwap": "🔗",
     "OptionableBond": "📊",
-    "OptionTrade": "⚙️",
-    "InterestRateSwaption": "📐",
+    "Option": "⚙️",          # OptionTrade registry key
+    "IRSwaption": "📐",       # InterestRateSwaption registry key
     "EquitySwap": "📈",
-    "CreditDefaultSwap": "🛡️",
-    "EquityOptionTrade": "🎯",
+    "CDS": "🛡️",              # CreditDefaultSwap registry key
+    "EquityOption": "🎯",     # EquityOptionTrade registry key
 }
 
 # leg_type -> (rate_field, display_multiplier, unit_label)
@@ -864,7 +865,7 @@ def render_detail(td:Optional[Dict], *, in_dialog:bool=False):
                                     min_value=50.0, max_value=150.0, step=0.25, format="%.2f",
                                     key=f"asp_{tid}_{sfx}"))
 
-        elif inst == "OptionTrade":
+        elif inst == "Option":           # OptionTrade
             extra["underlying_tenor_y"] = _ii(p2.number_input("Underlying Tenor (yrs)",
                 value=_ii(td.get("underlying_tenor_y",0)), min_value=0, max_value=50,
                 step=1, key=f"utny_{tid}_{sfx}"))
@@ -875,14 +876,14 @@ def render_detail(td:Optional[Dict], *, in_dialog:bool=False):
                 value=td.get("underlying_ticker",""), key=f"utk_{tid}_{sfx}")
             p3.markdown("")
 
-        elif inst == "EquityOptionTrade":
+        elif inst == "EquityOption":      # EquityOptionTrade
             extra["underlying_tenor_y"] = _ii(p2.number_input("Underlying Tenor (yrs)",
                 value=_ii(td.get("underlying_tenor_y",0)), min_value=0, max_value=50,
                 step=1, key=f"eutny_{tid}_{sfx}"))
             extra["underlying_ticker"] = p3.text_input("Underlying Ticker",
                 value=td.get("underlying_ticker",""), key=f"eutk_{tid}_{sfx}")
 
-        elif inst == "CreditDefaultSwap":
+        elif inst == "CDS":               # CreditDefaultSwap
             cl = td.get("legs", [{}])[0] if td.get("legs") else {}
             extra["tenor_y"] = _ii(p1.number_input("Tenor (yrs)",
                 value=_ii(td.get("tenor_y", 5)), min_value=1, max_value=10, step=1,
@@ -910,7 +911,7 @@ def render_detail(td:Optional[Dict], *, in_dialog:bool=False):
                 step=1.0, format="%.1f", key=f"cdsr_{tid}_{sfx}")
             extra["recovery_rate"] = rec_val / 100.0
 
-        elif inst == "InterestRateSwaption":
+        elif inst == "IRSwaption":        # InterestRateSwaption
             SWPN_TYPES = ["FIXED_FLOAT", "FLOAT_FIXED"]
             ss3 = td.get("swap_subtype", "FIXED_FLOAT")
             extra["swap_subtype"] = p2.selectbox(

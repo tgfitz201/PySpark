@@ -49,6 +49,7 @@ from tabulate import tabulate
 from models import (TradeBase, BaseLeg, FixedLeg, FloatLeg, OptionLeg, EquityLeg,
                     CreditLeg, CDSPremiumLeg, CDSProtectionLeg, EquityOptionLeg,
                     VanillaSwap, InterestRateSwap, InterestRateSwaption, Bond, CallableBond,
+                    OptionableBond,
                     OptionTrade, EquitySwap,
                     CreditDefaultSwap,
                     EquityOptionTrade, PricingResult,
@@ -517,6 +518,136 @@ def make_callable_bond_data(n: int = 100) -> List[CallableBond]:
     return trades
 
 
+def make_optionable_bond_data(n: int = 100) -> List[OptionableBond]:
+    """Generate n OptionableBond trades: 25 CALLABLE, 25 PUTABLE, 25 CONVERTIBLE, 25 EXTENDABLE (+ SINKING_FUND for remainder)."""
+    import random
+    random.seed(55)
+    base = VALUATION_DATE
+
+    tenors  = [5, 7, 10, 15, 20, 30]
+    faces   = [5_000_000, 10_000_000, 20_000_000, 50_000_000]
+    books   = ["BOND-NY", "BOND-LDN", "BOND-ASIA", "RATES-NY"]
+    cptys   = [f"CPTY-{c:02d}" for c in range(1, 11)]
+    traders = [f"T{c:03d}" for c in range(1, 11)]
+    tickers = ["SPY", "AAPL", "MSFT", "GOOGL", "AMZN"]
+
+    per_type = n // 4  # 25 each when n=100
+    subtypes = (["CALLABLE"] * per_type + ["PUTABLE"] * per_type +
+                ["CONVERTIBLE"] * per_type + ["EXTENDABLE"] * per_type +
+                ["SINKING_FUND"] * (n - 4 * per_type))
+
+    trades: List[OptionableBond] = []
+    for i, subtype in enumerate(subtypes):
+        tenor_y   = random.choice(tenors)
+        face      = float(random.choice(faces))
+        direction = TradeDirection.LONG if random.random() < 0.55 else TradeDirection.SHORT
+        par_coupon = MKT.get_par_rate(tenor_y)
+        coupon    = round(par_coupon + random.uniform(-0.005, 0.005), 4)
+        coupon    = max(0.040, min(0.055, coupon))
+        hw_vol    = round(random.uniform(0.008, 0.015), 4)
+
+        issued = base
+        try:
+            mat = date(base.year + tenor_y, base.month, base.day)
+        except ValueError:
+            mat = date(base.year + tenor_y, base.month, 28)
+
+        nc_y = random.randint(2, min(5, tenor_y - 1))
+        try:
+            first_call = date(base.year + nc_y, base.month, base.day)
+        except ValueError:
+            first_call = date(base.year + nc_y, base.month, 28)
+
+        bond_leg = BaseLeg(
+            "BOND", face, issued, mat,
+            coupon_rate=coupon, day_count="30/360",
+            frequency="SEMIANNUAL", redemption=100.0,
+            settlement_days=2, issue_date=issued,
+        )
+
+        extra = {}
+
+        if subtype == "CALLABLE":
+            opt_leg = OptionLeg(
+                "OPTION", face, first_call, mat,
+                strike=1.00, option_type="CALL",
+                exercise_type=random.choice(["BERMUDAN", "AMERICAN"]),
+                vol=hw_vol, vol_type="NORMAL", vol_shift=0.0,
+                underlying_tenor_m=tenor_y * 12, underlying_type="BOND",
+            )
+            legs = [bond_leg, opt_leg]
+
+        elif subtype == "PUTABLE":
+            opt_leg = OptionLeg(
+                "OPTION", face, first_call, mat,
+                strike=1.00, option_type="PUT",
+                exercise_type=random.choice(["BERMUDAN", "AMERICAN"]),
+                vol=hw_vol, vol_type="NORMAL", vol_shift=0.0,
+                underlying_tenor_m=tenor_y * 12, underlying_type="BOND",
+            )
+            legs = [bond_leg, opt_leg]
+
+        elif subtype == "CONVERTIBLE":
+            ticker = random.choice(tickers)
+            s0     = MKT.equity_prices.get(ticker, 150.0)
+            q      = MKT.equity_divylds.get(ticker, 0.013)
+            conv_prem = round(random.uniform(0.20, 0.35), 3)
+            conv_price = s0 * (1 + conv_prem)
+            eq_vol = round(random.uniform(0.20, 0.35), 4)
+            cr_spread = round(random.uniform(0.005, 0.025), 4)
+
+            eq_opt_leg = EquityOptionLeg(
+                "EQUITY_OPTION", face, issued, mat,
+                strike=conv_price,
+                option_type="CALL",
+                exercise_type="AMERICAN",
+                vol=eq_vol,
+                underlying_ticker=ticker,
+                initial_price=s0,
+                dividend_yield=q,
+                pricing_model="BINOMIAL",
+                spread=cr_spread,
+            )
+            legs = [bond_leg, eq_opt_leg]
+            extra["conversion_premium"] = conv_prem
+
+        elif subtype == "EXTENDABLE":
+            ext_y = random.randint(2, 5)
+            try:
+                original_mat = date(base.year + tenor_y - ext_y, base.month, base.day)
+            except ValueError:
+                original_mat = date(base.year + tenor_y - ext_y, base.month, 28)
+            opt_leg = OptionLeg(
+                "OPTION", face, original_mat, mat,
+                strike=1.00, option_type="PUT",
+                exercise_type="EUROPEAN",
+                vol=hw_vol, vol_type="NORMAL", vol_shift=0.0,
+                underlying_tenor_m=ext_y * 12, underlying_type="BOND",
+            )
+            legs = [bond_leg, opt_leg]
+
+        else:  # SINKING_FUND
+            sinking_pct = round(random.uniform(0.08, 0.12), 3)
+            legs = [bond_leg]
+            extra["sinking_pct_per_period"] = sinking_pct
+
+        trade_id = f"OBOND-{subtype[:4]}-{i+1:04d}"
+        trades.append(OptionableBond(
+            trade_id=trade_id,
+            book=random.choice(books),
+            counterparty=random.choice(cptys),
+            trader=random.choice(traders),
+            valuation_date=base,
+            direction=direction,
+            tenor_y=tenor_y,
+            isin=f"US{i+2001:09d}",
+            bond_subtype=subtype,
+            legs=legs,
+            **extra,
+        ))
+    return trades
+
+
 def make_equity_option_data(n: int = 100) -> List[EquityOptionTrade]:
     """Generate n vanilla equity options (calls and puts, European and American)."""
     import random
@@ -763,7 +894,9 @@ def populate_trades(
     _patch(eqopt_trades, all_books_by_type["EQOPT"] + [macro])
     # xccy_trades already have book/trader/counterparty set in make_xccy_irs_data
 
-    return irs_trades + bond_trades + opt_trades + eq_trades + cds_trades + eqopt_trades + xccy_trades
+    obond_trades = make_optionable_bond_data(100)
+    _patch(obond_trades, all_books_by_type["BOND"] + [macro])
+    return irs_trades + bond_trades + opt_trades + eq_trades + cds_trades + eqopt_trades + xccy_trades + obond_trades
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1317,6 +1450,282 @@ def _price_callable_bond(trade, curve_df: pd.DataFrame) -> Dict[str, Any]:
                 vega=vega, theta=_NAN, delta=option_value,
                 gamma=_NAN, rho=_NAN,
                 cr01=_NAN, jump_to_default=_NAN, error="")
+
+
+def _price_optionable_bond(trade, curve_df: pd.DataFrame) -> Dict[str, Any]:
+    """Dispatch to the correct sub-pricer based on bond_subtype."""
+    subtype = getattr(trade, "bond_subtype", "CALLABLE")
+    if subtype in ("CALLABLE", "PUTABLE"):
+        return _price_callable_bond(trade, curve_df)
+    elif subtype == "CONVERTIBLE":
+        return _price_convertible_bond(trade, curve_df)
+    elif subtype == "EXTENDABLE":
+        return _price_extendable_bond(trade, curve_df)
+    elif subtype == "SINKING_FUND":
+        return _price_sinking_fund_bond(trade, curve_df)
+    else:
+        return _price_callable_bond(trade, curve_df)
+
+
+def _price_convertible_bond(trade, curve_df: pd.DataFrame) -> Dict[str, Any]:
+    """
+    Price a convertible bond using QuantLib BinomialConvertibleEngine (CRR 200 steps).
+    Falls back to straight bond + Black-Scholes call proxy if ConvertibleFixedCouponBond fails.
+    """
+    ql_freq, ql_dc, ql_bdc, ql_cal = _ql_maps()
+
+    bl  = trade.bond_leg
+    ol  = trade.option_leg
+    val_dt = trade.valuation_date
+    ql_val = ql.Date(val_dt.day, val_dt.month, val_dt.year)
+    ql.Settings.instance().evaluationDate = ql_val
+
+    sofr     = build_sofr_curve(ql_val, curve_df)
+    dc       = ql_dc.get(bl.day_count, ql.Thirty360(ql.Thirty360.BondBasis))
+    bdc      = ql_bdc.get(bl.bdc, ql.ModifiedFollowing)
+    freq     = ql_freq.get(bl.frequency, ql.Semiannual)
+    calendar = ql_cal.get(bl.calendar, ql.UnitedStates(ql.UnitedStates.GovernmentBond))
+
+    def to_ql(d): return ql.Date(d.day, d.month, d.year)
+
+    issue_dt = to_ql(bl.issue_date if bl.issue_date else bl.start_date)
+    start_dt = to_ql(bl.start_date)
+    mat_dt   = to_ql(bl.end_date)
+
+    notional      = bl.notional
+    coupon_rate   = bl.coupon_rate
+    stock_price   = getattr(ol, "initial_price", 100.0)
+    conv_price    = getattr(ol, "strike", stock_price * 1.25)
+    eq_vol        = getattr(ol, "vol", 0.25)
+    div_yield     = getattr(ol, "dividend_yield", 0.013)
+    credit_spread = getattr(ol, "spread", getattr(ol, "credit_spread", 0.01))
+    conversion_ratio = notional / conv_price if conv_price > 0 else 1.0
+
+    schedule = ql.Schedule(start_dt, mat_dt, ql.Period(freq), calendar,
+                           bdc, bdc, ql.DateGeneration.Backward, False)
+
+    # Straight bond for comparison
+    bullet = ql.FixedRateBond(
+        bl.settlement_days, notional, schedule,
+        [coupon_rate], dc, bdc, bl.redemption, issue_dt,
+    )
+    bullet.setPricingEngine(ql.DiscountingBondEngine(sofr))
+    straight_npv   = bullet.NPV()
+    straight_clean = bullet.cleanPrice()
+
+    dc_yield = ql.ActualActual(ql.ActualActual.Bond)
+    try:
+        ytm = bullet.bondYield(dc_yield, ql.Compounded, freq)
+    except Exception:
+        ytm = _NAN
+
+    # Try QuantLib ConvertibleFixedCouponBond
+    npv_usd = _NAN
+    clean_usd = _NAN
+    accrued = 0.0
+    option_value = 0.0
+    conv_bond_ok = False
+    try:
+        risky_spread_handle = ql.Handle(ql.SimpleQuote(credit_spread))
+        spot_handle  = ql.Handle(ql.SimpleQuote(stock_price))
+        div_handle   = ql.Handle(ql.FlatForward(ql_val, div_yield, ql.Actual365Fixed()))
+        vol_handle   = ql.Handle(ql.BlackConstantVol(ql_val, ql.NullCalendar(),
+                                                       eq_vol, ql.Actual365Fixed()))
+        stock_process = ql.BlackScholesMertonProcess(spot_handle, div_handle, sofr, vol_handle)
+
+        exercise    = ql.AmericanExercise(ql_val, mat_dt)
+        dividends   = ql.DividendSchedule()
+        callability = ql.CallabilitySchedule()
+
+        conv_bond = ql.ConvertibleFixedCouponBond(
+            exercise, conversion_ratio, dividends, callability,
+            risky_spread_handle, issue_dt, bl.settlement_days,
+            [coupon_rate], dc, schedule, bl.redemption,
+        )
+        engine = ql.BinomialConvertibleEngine(stock_process, "crr", 200)
+        conv_bond.setPricingEngine(engine)
+
+        npv_usd   = conv_bond.NPV()
+        dirty_pct = conv_bond.dirtyPrice()
+        clean_pct = conv_bond.cleanPrice()
+        clean_usd = clean_pct / 100.0 * notional
+        accrued   = (dirty_pct - clean_pct) / 100.0 * notional
+        option_value = max(0.0, npv_usd - straight_npv)
+        conv_bond_ok = True
+    except Exception:
+        conv_bond_ok = False
+        # Fallback: straight bond + Black-Scholes call proxy
+        import math
+        T = max(0.01, (bl.end_date - trade.valuation_date).days / 365.25)
+        r = ytm if ytm == ytm and math.isfinite(ytm) else 0.045
+        if conv_price > 0 and eq_vol > 0:
+            d1 = (math.log(stock_price / conv_price) + (r - div_yield + 0.5 * eq_vol**2) * T) / (eq_vol * math.sqrt(T))
+            d2 = d1 - eq_vol * math.sqrt(T)
+            from scipy.stats import norm as _norm
+            call_per_share = (stock_price * math.exp(-div_yield * T) * _norm.cdf(d1)
+                              - conv_price * math.exp(-r * T) * _norm.cdf(d2))
+            option_value = max(0.0, conversion_ratio * call_per_share)
+        else:
+            option_value = 0.0
+        npv_usd = straight_npv + option_value
+        clean_usd = straight_clean / 100.0 * notional + option_value
+        accrued = 0.0
+
+    # DV01 via central difference on straight bond
+    bumped = curve_df.copy(); bumped["zero_rate"] += 1e-4
+    sofr_up  = build_sofr_curve(ql_val, bumped)
+    bullet_up = ql.FixedRateBond(
+        bl.settlement_days, notional, schedule,
+        [coupon_rate], dc, bdc, bl.redemption, issue_dt,
+    )
+    bullet_up.setPricingEngine(ql.DiscountingBondEngine(sofr_up))
+    npv_up = bullet_up.NPV()
+
+    bumped_dn = curve_df.copy(); bumped_dn["zero_rate"] -= 1e-4
+    sofr_dn = build_sofr_curve(ql_val, bumped_dn)
+    bullet_dn = ql.FixedRateBond(
+        bl.settlement_days, notional, schedule,
+        [coupon_rate], dc, bdc, bl.redemption, issue_dt,
+    )
+    bullet_dn.setPricingEngine(ql.DiscountingBondEngine(sofr_dn))
+    npv_dn = bullet_dn.NPV()
+
+    dv01_raw = (npv_up - npv_dn) / 2.0
+    sign = -1.0 if getattr(trade.direction, 'value', trade.direction) == "SHORT" else 1.0
+    dv01 = sign * abs(dv01_raw)
+    duration = dv01 / (notional * 1e-4) if notional > 0 else _NAN
+    pv01 = dv01 / (notional / 1e6) if notional > 0 else _NAN
+    convexity = (npv_up + npv_dn - 2 * straight_npv) / (straight_npv * (1e-4) ** 2) if straight_npv > 0 else _NAN
+
+    vega = _NAN
+    equity_delta = _NAN
+
+    return dict(
+        swap_npv    = npv_usd,
+        clean_price = clean_usd,
+        accrued     = accrued,
+        par_rate    = ytm,
+        dv01        = dv01,
+        duration    = duration,
+        pv01        = pv01,
+        convexity   = convexity,
+        delta       = option_value,
+        vega        = vega,
+        theta       = _NAN,
+        gamma       = equity_delta,
+        rho         = _NAN,
+        fixed_npv   = straight_npv,
+        float_npv   = option_value,
+        cr01        = _NAN,
+        jump_to_default = _NAN,
+        error       = "",
+    )
+
+
+def _price_extendable_bond(trade, curve_df: pd.DataFrame) -> Dict[str, Any]:
+    """Price an extendable bond using HullWhite putable bond framework."""
+    return _price_callable_bond(trade, curve_df)
+
+
+def _price_sinking_fund_bond(trade, curve_df: pd.DataFrame) -> Dict[str, Any]:
+    """Price a sinking fund bond using QuantLib AmortizingFixedRateBond."""
+    ql_freq, ql_dc, ql_bdc, ql_cal = _ql_maps()
+
+    bl     = trade.bond_leg
+    val_dt = trade.valuation_date
+    ql_val = ql.Date(val_dt.day, val_dt.month, val_dt.year)
+    ql.Settings.instance().evaluationDate = ql_val
+
+    sofr     = build_sofr_curve(ql_val, curve_df)
+    calendar = ql_cal.get(bl.calendar, ql.UnitedStates(ql.UnitedStates.GovernmentBond))
+    dc       = ql_dc.get(bl.day_count, ql.Thirty360(ql.Thirty360.BondBasis))
+    bdc      = ql_bdc.get(bl.bdc, ql.ModifiedFollowing)
+    freq     = ql_freq.get(bl.frequency, ql.Semiannual)
+
+    def to_ql(d): return ql.Date(d.day, d.month, d.year)
+
+    issue_dt = to_ql(bl.issue_date if bl.issue_date else bl.start_date)
+    start_dt = to_ql(bl.start_date)
+    mat_dt   = to_ql(bl.end_date)
+
+    notional      = bl.notional
+    coupon_rate   = bl.coupon_rate
+    sinking_pct   = getattr(trade, "sinking_pct_per_period", 0.10)
+
+    schedule = ql.Schedule(start_dt, mat_dt, ql.Period(freq), calendar,
+                           bdc, bdc, ql.DateGeneration.Backward, False)
+
+    n_periods = len(schedule) - 1
+    n_per_year = 2 if bl.frequency == "SEMIANNUAL" else 1
+    notionals = []
+    for j in range(n_periods):
+        year_num = j // n_per_year
+        amortized = min(1.0, year_num * sinking_pct)
+        remaining = max(0.0, 1.0 - amortized)
+        notionals.append(notional * remaining)
+
+    try:
+        amort_bond = ql.AmortizingFixedRateBond(
+            bl.settlement_days, notionals, schedule,
+            [coupon_rate], dc, bdc, issue_dt,
+        )
+        amort_bond.setPricingEngine(ql.DiscountingBondEngine(sofr))
+
+        npv_usd   = amort_bond.NPV()
+        dirty_pct = amort_bond.dirtyPrice()
+        clean_pct = amort_bond.cleanPrice()
+        clean_usd = clean_pct / 100.0 * notional
+        accrued   = (dirty_pct - clean_pct) / 100.0 * notional
+    except Exception as e:
+        return {**_NAN_ROW, "error": f"SinkingFund pricing failed: {e}"}
+
+    dc_yield = ql.ActualActual(ql.ActualActual.Bond)
+    try:
+        ytm = amort_bond.bondYield(dc_yield, ql.Compounded, freq)
+    except Exception:
+        ytm = _NAN
+
+    bumped = curve_df.copy(); bumped["zero_rate"] += 1e-4
+    sofr_up = build_sofr_curve(ql_val, bumped)
+    ab_up = ql.AmortizingFixedRateBond(
+        bl.settlement_days, notionals, schedule, [coupon_rate], dc, bdc, issue_dt)
+    ab_up.setPricingEngine(ql.DiscountingBondEngine(sofr_up))
+    npv_up = ab_up.NPV()
+
+    bumped_dn = curve_df.copy(); bumped_dn["zero_rate"] -= 1e-4
+    sofr_dn = build_sofr_curve(ql_val, bumped_dn)
+    ab_dn = ql.AmortizingFixedRateBond(
+        bl.settlement_days, notionals, schedule, [coupon_rate], dc, bdc, issue_dt)
+    ab_dn.setPricingEngine(ql.DiscountingBondEngine(sofr_dn))
+    npv_dn = ab_dn.NPV()
+
+    dv01_raw = (npv_up - npv_dn) / 2.0
+    sign = -1.0 if getattr(trade.direction, 'value', trade.direction) == "SHORT" else 1.0
+    dv01 = sign * abs(dv01_raw)
+    duration = dv01 / (notional * 1e-4) if notional > 0 else _NAN
+    pv01 = dv01 / (notional / 1e6) if notional > 0 else _NAN
+    convexity_val = (npv_up + npv_dn - 2 * npv_usd) / (npv_usd * (1e-4) ** 2) if npv_usd > 0 else _NAN
+
+    return dict(
+        swap_npv    = npv_usd,
+        clean_price = clean_usd,
+        accrued     = accrued,
+        par_rate    = ytm,
+        dv01        = dv01,
+        duration    = duration,
+        pv01        = pv01,
+        convexity   = abs(convexity_val) if convexity_val == convexity_val else _NAN,
+        delta       = _NAN,
+        vega        = _NAN,
+        theta       = _NAN,
+        gamma       = _NAN,
+        rho         = _NAN,
+        fixed_npv   = _NAN,
+        float_npv   = _NAN,
+        cr01        = _NAN,
+        jump_to_default = _NAN,
+        error       = "",
+    )
 
 
 # ─── Swaption ─────────────────────────────────────────────────────────────────
@@ -1879,6 +2288,7 @@ def _price_one(trade, curve_df: pd.DataFrame) -> Dict[str, Any]:
     from models.cross_currency_swap import CrossCurrencySwap
     from models.interest_rate_swaption import InterestRateSwaption
     from models.callable_bond import CallableBond
+    from models.optionable_bond import OptionableBond
     try:
         if isinstance(trade, EquityOptionTrade):
             return _price_equity_option(trade, curve_df)
@@ -1898,6 +2308,8 @@ def _price_one(trade, curve_df: pd.DataFrame) -> Dict[str, Any]:
             return _price_swap(trade, curve_df)
         elif isinstance(trade, CrossCurrencySwap):
             return _price_xccy(trade, curve_df)
+        elif isinstance(trade, OptionableBond):
+            return _price_optionable_bond(trade, curve_df)
         elif isinstance(trade, CallableBond):
             return _price_callable_bond(trade, curve_df)
         elif isinstance(trade, Bond):
@@ -1983,6 +2395,11 @@ def run_pricing(n_irs: int = 50, n_bonds: int = 50, n_opts: int = 50,
         if isinstance(t, InterestRateSwaption): return "IRS_SWPTN"
         if isinstance(t, OptionTrade):          return "SWAPTION"
         if isinstance(t, VanillaSwap) or isinstance(t, InterestRateSwap):  return "IRS"
+        if isinstance(t, OptionableBond):
+            sub = getattr(t, "bond_subtype", "CALLABLE")
+            return {"CALLABLE": "CBOND", "PUTABLE": "CBOND",
+                    "CONVERTIBLE": "CVTBL", "EXTENDABLE": "EXTBL",
+                    "SINKING_FUND": "SINKBL"}.get(sub, "OBOND")
         if isinstance(t, CallableBond):         return "CBOND"
         return "BOND"
 
@@ -1998,6 +2415,7 @@ def run_pricing(n_irs: int = 50, n_bonds: int = 50, n_opts: int = 50,
             fl = t.fixed_leg
             return fl.coupon_rate if fl is not None else (t.legs[0].spread if t.legs else 0.0)
         if isinstance(t, Bond):              return t.bond_leg.coupon_rate
+        if isinstance(t, OptionableBond):    return t.bond_leg.coupon_rate
         if isinstance(t, CallableBond):      return t.bond_leg.coupon_rate
         if isinstance(t, OptionTrade):       return t.option_leg.strike
         if isinstance(t, EquitySwap):        return t.equity_leg.initial_price
@@ -2263,6 +2681,28 @@ def build_pricing_results(all_trades: list, records: list) -> List[PricingResult
                 pr.spread     = flt.spread
                 pr.index_name = flt.index_name
 
+        elif isinstance(trade, OptionableBond):
+            sub = getattr(trade, "bond_subtype", "CALLABLE")
+            pr.instrument = {"CALLABLE": "CBOND", "PUTABLE": "CBOND",
+                             "CONVERTIBLE": "CVTBL", "EXTENDABLE": "EXTBL",
+                             "SINKING_FUND": "SINKBL"}.get(sub, "OBOND")
+            pr.leg_count  = len(trade.legs)
+            pr.leg_types  = ",".join(l.leg_type for l in trade.legs)
+            bl = trade.legs[0] if trade.legs else None
+            if bl:
+                pr.notional    = bl.notional
+                pr.coupon_rate = getattr(bl, 'coupon_rate', _NAN_F)
+                pr.start_date  = str(bl.start_date)
+                pr.end_date    = str(bl.end_date)
+                pr.currency    = bl.currency
+            if len(trade.legs) > 1:
+                ol = trade.legs[1]
+                pr.strike        = getattr(ol, 'strike', _NAN_F)
+                pr.option_type   = getattr(ol, 'option_type', '')
+                pr.exercise_type = getattr(ol, 'exercise_type', '')
+                pr.vol           = getattr(ol, 'vol', _NAN_F)
+                pr.swap_subtype  = sub
+
         else:  # Bond or CallableBond
             is_callable = isinstance(trade, CallableBond)
             pr.instrument = "CBOND" if is_callable else "BOND"
@@ -2308,7 +2748,7 @@ def print_results(records_or_df, project_dir: str) -> None:
     # Sub-lists by instrument (pure Python filter — safe in all environments)
     irs_recs    = [r for r in all_recs if r.get("instrument") == "IRS"]
     bond_recs   = [r for r in all_recs if r.get("instrument") == "BOND"]
-    cbond_recs  = [r for r in all_recs if r.get("instrument") == "CBOND"]
+    cbond_recs  = [r for r in all_recs if r.get("instrument") in ("CBOND", "CVTBL", "EXTBL", "SINKBL")]
     opt_recs    = [r for r in all_recs if r.get("instrument") == "SWAPTION"]
     eq_recs     = [r for r in all_recs if r.get("instrument") == "EQ_SWAP"]
     cds_recs    = [r for r in all_recs if r.get("instrument") == "CDS"]
@@ -2696,6 +3136,10 @@ def save_all_csvs(all_trades: list, records_or_df, out_dir: str) -> None:
     asset_map = {
         "IRS":      "IRS",
         "BOND":     "Bond",
+        "CBOND":    "CallableBond",
+        "CVTBL":    "ConvertibleBond",
+        "EXTBL":    "ExtendableBond",
+        "SINKBL":   "SinkingFundBond",
         "SWAPTION": "Swaption",
         "EQ_SWAP":  "EquitySwap",
         "CDS":      "CDS",
@@ -2860,6 +3304,9 @@ def _sanity_check_results(df_or_records) -> None:
     irs_r    = [r for r in recs if _s(r, "instrument") == "IRS"]
     bond_r   = [r for r in recs if _s(r, "instrument") == "BOND"]
     cbond_r  = [r for r in recs if _s(r, "instrument") == "CBOND"]
+    cvtbl_r  = [r for r in recs if _s(r, "instrument") == "CVTBL"]
+    extbl_r  = [r for r in recs if _s(r, "instrument") == "EXTBL"]
+    sinkbl_r = [r for r in recs if _s(r, "instrument") == "SINKBL"]
     opt_r    = [r for r in recs if _s(r, "instrument") == "SWAPTION"]
     eq_r     = [r for r in recs if _s(r, "instrument") == "EQ_SWAP"]
     cds_r    = [r for r in recs if _s(r, "instrument") == "CDS"]
@@ -2949,6 +3396,44 @@ def _sanity_check_results(df_or_records) -> None:
         ytm = [_f(r, "par_rate") for r in cbond_r if _f(r, "par_rate") == _f(r, "par_rate")]
         if ytm:
             checks.append(("CBOND: YTM 2–8%",
+                            min(ytm) > 0.02 and max(ytm) < 0.08,
+                            f"range {min(ytm):.3%}–{max(ytm):.3%}"))
+
+    # ── Convertible Bond ──────────────────────────────────────────────────────
+    if cvtbl_r:
+        sign_ok = all(
+            (_f(r, "dv01") < 0 if _s(r, "direction") == "LONG" else _f(r, "dv01") > 0)
+            for r in cvtbl_r)
+        checks.append(("CVTBL: DV01 sign (LONG<0, SHORT>0)", sign_ok, f"{len(cvtbl_r)} convertible bonds"))
+        px_pct = [_f(r, "clean_price") / _f(r, "notional") * 100.0
+                  for r in cvtbl_r
+                  if _f(r, "clean_price") == _f(r, "clean_price") and _f(r, "notional") > 0]
+        if px_pct:
+            checks.append(("CVTBL: clean price 70–130 (% of par)",
+                            min(px_pct) > 70 and max(px_pct) < 130,
+                            f"range {min(px_pct):.2f}–{max(px_pct):.2f}"))
+
+    # ── Extendable Bond ────────────────────────────────────────────────────────
+    if extbl_r:
+        sign_ok = all(
+            (_f(r, "dv01") < 0 if _s(r, "direction") == "LONG" else _f(r, "dv01") > 0)
+            for r in extbl_r)
+        checks.append(("EXTBL: DV01 sign (LONG<0, SHORT>0)", sign_ok, f"{len(extbl_r)} extendable bonds"))
+        ytm = [_f(r, "par_rate") for r in extbl_r if _f(r, "par_rate") == _f(r, "par_rate")]
+        if ytm:
+            checks.append(("EXTBL: YTM 2–8%",
+                            min(ytm) > 0.02 and max(ytm) < 0.08,
+                            f"range {min(ytm):.3%}–{max(ytm):.3%}"))
+
+    # ── Sinking Fund Bond ──────────────────────────────────────────────────────
+    if sinkbl_r:
+        sign_ok = all(
+            (_f(r, "dv01") < 0 if _s(r, "direction") == "LONG" else _f(r, "dv01") > 0)
+            for r in sinkbl_r)
+        checks.append(("SINKBL: DV01 sign (LONG<0, SHORT>0)", sign_ok, f"{len(sinkbl_r)} sinking fund bonds"))
+        ytm = [_f(r, "par_rate") for r in sinkbl_r if _f(r, "par_rate") == _f(r, "par_rate")]
+        if ytm:
+            checks.append(("SINKBL: YTM 2–8%",
                             min(ytm) > 0.02 and max(ytm) < 0.08,
                             f"range {min(ytm):.3%}–{max(ytm):.3%}"))
 

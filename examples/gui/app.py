@@ -818,6 +818,27 @@ def render_detail(td:Optional[Dict], *, in_dialog:bool=False):
                                           key=f"isin_{tid}_{sfx}")
             p3.markdown("")
 
+        elif inst == "OptionableBond":
+            BOND_SUBTYPES = ["CALLABLE", "PUTABLE", "CONVERTIBLE", "EXTENDABLE", "SINKING_FUND"]
+            cur_sub = td.get("bond_subtype", "CALLABLE")
+            extra["bond_subtype"] = p2.selectbox("Bond Subtype", BOND_SUBTYPES,
+                index=BOND_SUBTYPES.index(cur_sub) if cur_sub in BOND_SUBTYPES else 0,
+                key=f"bsub_{tid}_{sfx}")
+            extra["isin"] = p3.text_input("ISIN", value=td.get("isin","") or "",
+                                          key=f"isin_ob_{tid}_{sfx}")
+            if extra["bond_subtype"] == "SINKING_FUND":
+                q1, q2, _ = st.columns(3)
+                extra["sinking_pct_per_period"] = float(q1.number_input(
+                    "Sinking % per Period", value=float(td.get("sinking_pct_per_period", 0.10) or 0.10),
+                    min_value=0.0, max_value=1.0, step=0.01, format="%.3f",
+                    key=f"spct_{tid}_{sfx}"))
+            elif extra["bond_subtype"] == "CONVERTIBLE":
+                q1, q2, _ = st.columns(3)
+                extra["conversion_premium"] = float(q1.number_input(
+                    "Conversion Premium", value=float(td.get("conversion_premium", 0.25) or 0.25),
+                    min_value=0.0, max_value=2.0, step=0.01, format="%.3f",
+                    key=f"cprem_{tid}_{sfx}"))
+
         elif inst == "Option":
             extra["underlying_tenor_y"] = _ii(p2.number_input("Underlying Tenor (yrs)",
                 value=_ii(td.get("underlying_tenor_y",0)), min_value=0, max_value=50,

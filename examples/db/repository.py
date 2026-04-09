@@ -154,6 +154,14 @@ CREATE TABLE IF NOT EXISTS EquityOptionTrade (
     trade_id TEXT PRIMARY KEY REFERENCES TradeBase(trade_id) ON DELETE CASCADE,
     tenor_y  INTEGER DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS OptionableBond (
+    trade_id               TEXT PRIMARY KEY REFERENCES TradeBase(trade_id) ON DELETE CASCADE,
+    tenor_y                INTEGER DEFAULT 0,
+    isin                   TEXT    DEFAULT '',
+    bond_subtype           TEXT    DEFAULT 'CALLABLE',
+    sinking_pct_per_period REAL    DEFAULT 0.0,
+    conversion_premium     REAL    DEFAULT 0.0
+);
 
 CREATE TABLE IF NOT EXISTS BaseLeg (
     leg_id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -294,6 +302,7 @@ _TRADE_TYPE_TO_SUBTABLE: Dict[str, str] = {
     "CrossCurrencySwap": "CrossCurrencySwap",
     "Bond":              "Bond",
     "CallableBond":      "Bond",    # shares Bond subtable (tenor_y, isin)
+    "OptionableBond":    "OptionableBond",
     "Option":            "OptionTrade",
     "IRSwaption":        "OptionTrade",   # shares OptionTrade subtable
     "EquitySwap":        "EquitySwap",
@@ -520,6 +529,20 @@ class TradeRepository:
             self._conn.execute("ALTER TABLE InterestRateSwap ADD COLUMN fx_rate REAL DEFAULT 1.0")
         except Exception:
             pass  # column already exists
+        # Create OptionableBond table if it doesn't exist (for older DBs)
+        try:
+            self._conn.execute("""
+                CREATE TABLE IF NOT EXISTS OptionableBond (
+                    trade_id               TEXT PRIMARY KEY REFERENCES TradeBase(trade_id) ON DELETE CASCADE,
+                    tenor_y                INTEGER DEFAULT 0,
+                    isin                   TEXT    DEFAULT '',
+                    bond_subtype           TEXT    DEFAULT 'CALLABLE',
+                    sinking_pct_per_period REAL    DEFAULT 0.0,
+                    conversion_premium     REAL    DEFAULT 0.0
+                )
+            """)
+        except Exception:
+            pass
         self._conn.commit()
 
     # ── helpers ───────────────────────────────────────────────────────────────
@@ -621,6 +644,16 @@ class TradeRepository:
                 self._conn.execute(
                     "INSERT OR REPLACE INTO EquityOptionTrade (trade_id, tenor_y) VALUES (?, ?)",
                     (trade_id, getattr(trade, "tenor_y", 0)),
+                )
+            elif subtable == "OptionableBond":
+                self._conn.execute(
+                    """INSERT OR REPLACE INTO OptionableBond
+                        (trade_id, tenor_y, isin, bond_subtype, sinking_pct_per_period, conversion_premium)
+                       VALUES (?,?,?,?,?,?)""",
+                    (trade_id, getattr(trade, "tenor_y", 0), getattr(trade, "isin", "") or "",
+                     getattr(trade, "bond_subtype", "CALLABLE"),
+                     getattr(trade, "sinking_pct_per_period", 0.0),
+                     getattr(trade, "conversion_premium", 0.0)),
                 )
 
             # 3. Refresh legs
@@ -879,6 +912,16 @@ class TradeRepository:
             return EquityOptionTrade(
                 **common,
                 tenor_y=int(sub.get("tenor_y") or 0),
+            )
+        if trade_type == "OptionableBond":
+            from models.optionable_bond import OptionableBond
+            return OptionableBond(
+                **common,
+                tenor_y=int(sub.get("tenor_y") or 0),
+                isin=sub.get("isin") or None,
+                bond_subtype=sub.get("bond_subtype") or "CALLABLE",
+                sinking_pct_per_period=float(sub.get("sinking_pct_per_period") or 0.0),
+                conversion_premium=float(sub.get("conversion_premium") or 0.0),
             )
 
         # Fallback: try generic fromJson path via old trades table

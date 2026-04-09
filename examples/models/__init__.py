@@ -19,6 +19,7 @@ from models.cds import CreditDefaultSwap
 from models.equity_option import EquityOptionTrade
 from models.interest_rate_swaption import InterestRateSwaption
 from models.callable_bond import CallableBond
+from models.optionable_bond import OptionableBond
 from models.pricing_result import PricingResult
 from models.market_data import MarketDataSnapshot, MarketDataCache, make_default_snapshot
 
@@ -32,7 +33,7 @@ __all__ = [
     "TradeReference",
     # trades
     "TradeBase", "VanillaSwap", "InterestRateSwap", "CrossCurrencySwap",
-    "Bond", "CallableBond", "OptionTrade", "InterestRateSwaption", "EquitySwap", "CreditDefaultSwap",
+    "Bond", "CallableBond", "OptionableBond", "OptionTrade", "InterestRateSwaption", "EquitySwap", "CreditDefaultSwap",
     "EquityOptionTrade",
     # pricing result
     "PricingResult",

@@ -512,10 +512,14 @@ def make_optionable_bond_data(n: int = 100) -> List[OptionableBond]:
     traders = [f"T{c:03d}" for c in range(1, 11)]
     tickers = ["SPY", "AAPL", "MSFT", "GOOGL", "AMZN"]
 
-    per_type = n // 4  # 25 each when n=100
-    subtypes = (["CALLABLE"] * per_type + ["PUTABLE"] * per_type +
-                ["CONVERTIBLE"] * per_type + ["EXTENDABLE"] * per_type +
-                ["SINKING_FUND"] * (n - 4 * per_type))
+    per_type = n // 5  # equal allocation across all 5 subtypes
+    remainder = n - 5 * per_type
+    subtypes = (["CALLABLE"]    * per_type +
+                ["PUTABLE"]     * per_type +
+                ["CONVERTIBLE"] * per_type +
+                ["EXTENDABLE"]  * per_type +
+                ["SINKING_FUND"] * per_type +
+                ["CALLABLE"] * remainder)   # top up with CALLABLE if n not divisible by 5
 
     trades: List[OptionableBond] = []
     for i, subtype in enumerate(subtypes):
@@ -2450,8 +2454,13 @@ def run_pricing(n_irs: int = 50, n_bonds: int = 50, n_opts: int = 50,
              getattr(t, 'trader', ''), str(t.direction.value), t.tenor_y,
              _notional(t), _coupon(t), _swap_subtype(t), t.toJson())
             for t in all_trades]
+    # Partition by instrument first (groups same-type trades) then by trade_id
+    # within each group, giving n_cores * 2 partitions for better load balancing.
+    # Heavy pricers (CVTBL binomial, HullWhite tree) are spread across workers
+    # rather than landing in a single slow partition.
+    n_parts = max(n_cores * 2, 8)
     trades_df = (spark.createDataFrame(rows, schema=TRADE_SCHEMA)
-                 .repartitionByRange(n_cores, "trade_id"))
+                 .repartition(n_parts, "instrument", "trade_id"))
     price_udf = make_price_udf()
 
     def _execute() -> list:

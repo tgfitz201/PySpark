@@ -1,7 +1,7 @@
 metric,value
 Instrument,CVTBL
-Trade Count,100
+Trade Count,80
 Error Count,0
-Total Notional,"$2,350,000,000"
-Total NPV,"$3,032,138,801.56"
-Total DV01,"$157,643.00"
+Total Notional,"$1,700,000,000"
+Total NPV,"$2,227,057,986.72"
+Total DV01,"$-202,631.92"

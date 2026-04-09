@@ -253,7 +253,7 @@ def _price_xccy(trade, curve_df: pd.DataFrame) -> Dict[str, Any]:
 
 
 def price_swap(trade, curve_df: pd.DataFrame) -> Dict[str, Any]:
-    """Price a VanillaSwap — dispatches by swap_subtype."""
+    """Price an InterestRateSwap — dispatches by swap_subtype."""
     return _price_swap(trade, curve_df)
 
 

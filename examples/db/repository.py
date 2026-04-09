@@ -7,7 +7,7 @@ Class-Table-Inheritance (CTI) schema: every table name maps to a Python class na
 Old tables (trades, trade_legs, pricing_results) are preserved for backward compat.
 
 New tables:
-  TradeBase, VanillaSwap, Bond, OptionTrade, EquitySwap,
+  TradeBase, InterestRateSwap, Bond, OptionTrade, EquitySwap,
   CreditDefaultSwap, EquityOptionTrade
   BaseLeg, FixedLeg, FloatLeg, OptionLeg, EquityLeg, CreditLeg, EquityOptionLeg
   PricingResult
@@ -110,11 +110,6 @@ CREATE TABLE IF NOT EXISTS TradeBase (
     updated_at     TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now'))
 );
 
-CREATE TABLE IF NOT EXISTS VanillaSwap (
-    trade_id     TEXT PRIMARY KEY REFERENCES TradeBase(trade_id) ON DELETE CASCADE,
-    tenor_y      INTEGER DEFAULT 0,
-    swap_subtype TEXT    DEFAULT 'FIXED_FLOAT'
-);
 CREATE TABLE IF NOT EXISTS InterestRateSwap (
     trade_id    TEXT PRIMARY KEY REFERENCES TradeBase(trade_id) ON DELETE CASCADE,
     tenor_y     INTEGER DEFAULT 0,
@@ -297,11 +292,9 @@ CREATE INDEX IF NOT EXISTS idx_pr_trade_run   ON PricingResult(trade_id, run_id)
 
 # Maps _trade_type value → subclass table name
 _TRADE_TYPE_TO_SUBTABLE: Dict[str, str] = {
-    "VanillaSwap":       "VanillaSwap",
     "InterestRateSwap":  "InterestRateSwap",
     "CrossCurrencySwap": "CrossCurrencySwap",
     "Bond":              "Bond",
-    "CallableBond":      "Bond",    # shares Bond subtable (tenor_y, isin)
     "OptionableBond":    "OptionableBond",
     "Option":            "OptionTrade",
     "IRSwaption":        "OptionTrade",   # shares OptionTrade subtable
@@ -591,12 +584,7 @@ class TradeRepository:
             )
 
             # 2. Subclass table
-            if subtable == "VanillaSwap":
-                self._conn.execute(
-                    "INSERT OR REPLACE INTO VanillaSwap (trade_id, tenor_y, swap_subtype) VALUES (?, ?, ?)",
-                    (trade_id, getattr(trade, "tenor_y", 0), getattr(trade, "swap_subtype", "FIXED_FLOAT")),
-                )
-            elif subtable == "InterestRateSwap":
+            if subtable == "InterestRateSwap":
                 self._conn.execute(
                     "INSERT OR REPLACE INTO InterestRateSwap (trade_id, tenor_y, swap_subtype, fx_rate) VALUES (?, ?, ?, ?)",
                     (trade.trade_id, getattr(trade, "tenor_y", 0),
@@ -838,14 +826,6 @@ class TradeRepository:
             legs=legs,
         )
 
-        if trade_type == "VanillaSwap":
-            from models.interest_rate_swap import InterestRateSwap
-            # Migrate legacy VanillaSwap records to InterestRateSwap on read
-            return InterestRateSwap(
-                **common,
-                tenor_y=int(sub.get("tenor_y") or 0),
-                swap_subtype=sub.get("swap_subtype") or "FIXED_FLOAT",
-            )
         if trade_type == "InterestRateSwap":
             from models.interest_rate_swap import InterestRateSwap
             return InterestRateSwap(
@@ -869,13 +849,6 @@ class TradeRepository:
         if trade_type == "Bond":
             from models.bond import Bond
             return Bond(
-                **common,
-                tenor_y=int(sub.get("tenor_y") or 0),
-                isin=sub.get("isin"),
-            )
-        if trade_type == "CallableBond":
-            from models.callable_bond import CallableBond
-            return CallableBond(
                 **common,
                 tenor_y=int(sub.get("tenor_y") or 0),
                 isin=sub.get("isin"),

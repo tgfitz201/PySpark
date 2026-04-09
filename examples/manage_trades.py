@@ -2,7 +2,7 @@
 """
 manage_trades.py  —  Multi-instrument Pricer and Trade Manager
 =============================================================
-  Instruments : VanillaSwap (IRS) | Bond | OptionTrade (swaptions)
+  Instruments : InterestRateSwap (IRS) | Bond | OptionTrade (swaptions)
               | EquitySwap (TRS)  | CreditDefaultSwap (CDS)
               | EquityOption
   Framework   : QuantLib 1.41 + PySpark 4.0 (pandas UDF)
@@ -48,7 +48,7 @@ from tabulate import tabulate
 
 from models import (TradeBase, BaseLeg, FixedLeg, FloatLeg, OptionLeg, EquityLeg,
                     CreditLeg, CDSPremiumLeg, CDSProtectionLeg, EquityOptionLeg,
-                    VanillaSwap, InterestRateSwap, InterestRateSwaption, Bond, CallableBond,
+                    InterestRateSwap, InterestRateSwaption, Bond,
                     OptionableBond,
                     OptionTrade, EquitySwap,
                     CreditDefaultSwap,
@@ -442,80 +442,6 @@ def make_cds_data(n: int = 50) -> List[CreditDefaultSwap]:
     return result
 
 
-def make_callable_bond_data(n: int = 100) -> List[CallableBond]:
-    """Generate n callable/putable bonds with embedded HullWhite options."""
-    import random
-    random.seed(55)
-    base = VALUATION_DATE
-
-    tenors     = [5, 7, 10, 15, 20, 30]
-    faces      = [5_000_000, 10_000_000, 20_000_000, 50_000_000]
-    books      = ["BOND-NY", "BOND-LDN", "BOND-ASIA", "RATES-NY"]
-    cptys      = [f"CPTY-{c:02d}" for c in range(1, 11)]
-    traders    = ["T001","T002","T003","T004","T005","T006","T007","T008","T009","T010"]
-    call_types = (["CALL"] * 6 + ["PUT"] * 4)   # 60% CALLABLE / 40% PUTABLE
-    ex_types   = (["BERMUDAN"] * 7 + ["AMERICAN"] * 3)   # 70% BERMUDAN / 30% AMERICAN
-
-    trades: List[CallableBond] = []
-    for i in range(n):
-        tenor_y    = random.choice(tenors)
-        face       = float(random.choice(faces))
-        opt_t      = random.choice(call_types)
-        ex_t       = random.choice(ex_types)
-        direction  = TradeDirection.LONG if random.random() < 0.55 else TradeDirection.SHORT
-
-        # Coupon near-ATM
-        par_coupon = MKT.get_par_rate(tenor_y)
-        coupon     = round(par_coupon + random.uniform(-0.005, 0.005), 4)
-        coupon     = max(0.040, min(0.055, coupon))  # clamp 4.0–5.5%
-
-        # HullWhite vol
-        hw_vol = round(random.uniform(0.008, 0.015), 4)
-
-        # Dates
-        issued = base
-        try:
-            mat = date(base.year + tenor_y, base.month, base.day)
-        except ValueError:
-            mat = date(base.year + tenor_y, base.month, base.day - 1)
-
-        # First call: 2-5 years from today
-        nc_y = random.randint(2, min(5, tenor_y - 1))
-        try:
-            first_call = date(base.year + nc_y, base.month, base.day)
-        except ValueError:
-            first_call = date(base.year + nc_y, base.month, base.day - 1)
-
-        trades.append(CallableBond(
-            trade_id=f"CBOND-{i+1:04d}",
-            book=random.choice(books),
-            counterparty=random.choice(cptys),
-            trader=random.choice(traders),
-            valuation_date=base,
-            direction=direction,
-            tenor_y=tenor_y,
-            isin=f"US{i+1001:09d}",
-            legs=[
-                BaseLeg(
-                    "BOND", face, issued, mat,
-                    coupon_rate=coupon, day_count="30/360",
-                    frequency="SEMIANNUAL", redemption=100.0,
-                    settlement_days=2, issue_date=issued,
-                ),
-                OptionLeg(
-                    "OPTION", face, first_call, mat,
-                    strike=1.00,                  # par call/put
-                    option_type=opt_t,
-                    exercise_type=ex_t,
-                    vol=hw_vol,
-                    vol_type="NORMAL",
-                    vol_shift=0.0,
-                    underlying_tenor_m=tenor_y * 12,
-                    underlying_type="BOND",
-                ),
-            ],
-        ))
-    return trades
 
 
 def make_optionable_bond_data(n: int = 100) -> List[OptionableBond]:
@@ -2366,13 +2292,12 @@ def run_pricing(n_irs: int = 50, n_bonds: int = 50, n_opts: int = 50,
         if isinstance(t, CreditDefaultSwap):    return "CDS"
         if isinstance(t, InterestRateSwaption): return "IRS_SWPTN"
         if isinstance(t, OptionTrade):          return "SWAPTION"
-        if isinstance(t, VanillaSwap) or isinstance(t, InterestRateSwap):  return "IRS"
+        if isinstance(t, InterestRateSwap):  return "IRS"
         if isinstance(t, OptionableBond):
             sub = getattr(t, "bond_subtype", "CALLABLE")
             return {"CALLABLE": "CBOND", "PUTABLE": "CBOND",
                     "CONVERTIBLE": "CVTBL", "EXTENDABLE": "EXTBL",
                     "SINKING_FUND": "SINKBL"}.get(sub, "OBOND")
-        if isinstance(t, CallableBond):         return "CBOND"
         return "BOND"
 
     def _notional(t):
@@ -2383,12 +2308,11 @@ def run_pricing(n_irs: int = 50, n_bonds: int = 50, n_opts: int = 50,
             ol = t.option_leg
             return ol.strike if ol else 0.0
         if isinstance(t, InterestRateSwaption): return t.fixed_leg.coupon_rate
-        if isinstance(t, (VanillaSwap, InterestRateSwap)):
+        if isinstance(t, InterestRateSwap):
             fl = t.fixed_leg
             return fl.coupon_rate if fl is not None else (t.legs[0].spread if t.legs else 0.0)
         if isinstance(t, Bond):              return t.bond_leg.coupon_rate
         if isinstance(t, OptionableBond):    return t.bond_leg.coupon_rate
-        if isinstance(t, CallableBond):      return t.bond_leg.coupon_rate
         if isinstance(t, OptionTrade):       return t.option_leg.strike
         if isinstance(t, EquitySwap):        return t.equity_leg.initial_price
         if isinstance(t, CreditDefaultSwap): return t.credit_leg.credit_spread
@@ -2633,7 +2557,7 @@ def build_pricing_results(all_trades: list, records: list) -> List[PricingResult
                 pr.vol           = getattr(ol, 'vol', _NAN_F)
             pr.tenor_y = trade.tenor_y
 
-        elif isinstance(trade, (VanillaSwap, InterestRateSwap)):
+        elif isinstance(trade, InterestRateSwap):
             pr.instrument   = "IRS"
             pr.swap_subtype = getattr(trade, 'swap_subtype', 'FIXED_FLOAT')
             pr.tenor_y      = trade.tenor_y
@@ -2675,9 +2599,8 @@ def build_pricing_results(all_trades: list, records: list) -> List[PricingResult
                 pr.vol           = getattr(ol, 'vol', _NAN_F)
                 pr.swap_subtype  = sub
 
-        else:  # Bond or CallableBond
-            is_callable = isinstance(trade, CallableBond)
-            pr.instrument = "CBOND" if is_callable else "BOND"
+        else:  # Bond
+            pr.instrument = "BOND"
             pr.leg_count  = len(trade.legs)
             pr.leg_types  = ",".join(l.leg_type for l in trade.legs)
             bl = trade.legs[0] if trade.legs else None
@@ -2687,13 +2610,6 @@ def build_pricing_results(all_trades: list, records: list) -> List[PricingResult
                 pr.start_date  = str(bl.start_date)
                 pr.end_date    = str(bl.end_date)
                 pr.currency    = bl.currency
-            if is_callable and len(trade.legs) > 1:
-                ol = trade.legs[1]
-                pr.strike        = getattr(ol, 'strike', _NAN_F)
-                pr.option_type   = getattr(ol, 'option_type', '')
-                pr.exercise_type = getattr(ol, 'exercise_type', '')
-                pr.vol           = getattr(ol, 'vol', _NAN_F)
-                pr.swap_subtype  = trade.call_type   # "CALLABLE" or "PUTABLE"
             pr.tenor_y = trade.tenor_y
 
         if tid in df_idx:
@@ -3108,7 +3024,7 @@ def save_all_csvs(all_trades: list, records_or_df, out_dir: str) -> None:
     asset_map = {
         "IRS":      "IRS",
         "BOND":     "Bond",
-        "CBOND":    "CallableBond",
+        "CBOND":    "OptionableBond",
         "CVTBL":    "ConvertibleBond",
         "EXTBL":    "ExtendableBond",
         "SINKBL":   "SinkingFundBond",

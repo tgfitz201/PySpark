@@ -1,8 +1,7 @@
 """
 models/interest_rate_swap.py
 ============================
-InterestRateSwap — replaces/aliases VanillaSwap. Registered under
-trade_type="InterestRateSwap". VanillaSwap class still works for old data.
+InterestRateSwap — registered under trade_type="InterestRateSwap".
 
 When legs carry different currencies this is a Cross-Currency IRS.
 Use fx_rate (receive_ccy per pay_ccy) to convert legs to a common currency.

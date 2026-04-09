@@ -9,7 +9,6 @@ from models.leg import (BaseLeg, FixedLeg, FloatLeg, OptionLeg, EquityLeg,
                         CreditLeg, CDSPremiumLeg, CDSProtectionLeg, EquityOptionLeg)
 from models.trade_reference import TradeReference
 from models.trade_base import TradeBase
-from models.vanilla_swap import VanillaSwap
 from models.interest_rate_swap import InterestRateSwap
 from models.cross_currency_swap import CrossCurrencySwap
 from models.bond import Bond
@@ -18,7 +17,6 @@ from models.equity_swap import EquitySwap
 from models.cds import CreditDefaultSwap
 from models.equity_option import EquityOptionTrade
 from models.interest_rate_swaption import InterestRateSwaption
-from models.callable_bond import CallableBond
 from models.optionable_bond import OptionableBond
 from models.pricing_result import PricingResult
 from models.market_data import MarketDataSnapshot, MarketDataCache, make_default_snapshot
@@ -32,8 +30,8 @@ __all__ = [
     # reference
     "TradeReference",
     # trades
-    "TradeBase", "VanillaSwap", "InterestRateSwap", "CrossCurrencySwap",
-    "Bond", "CallableBond", "OptionableBond", "OptionTrade", "InterestRateSwaption", "EquitySwap", "CreditDefaultSwap",
+    "TradeBase", "InterestRateSwap", "CrossCurrencySwap",
+    "Bond", "OptionableBond", "OptionTrade", "InterestRateSwaption", "EquitySwap", "CreditDefaultSwap",
     "EquityOptionTrade",
     # pricing result
     "PricingResult",

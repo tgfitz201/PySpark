@@ -7,7 +7,7 @@ from models.trade_base import TradeBase
 from models.leg import BaseLeg, FixedLeg, FloatLeg, OptionLeg, EquityLeg, CreditLeg, EquityOptionLeg
 
 EXPECTED_LEG_COUNTS = {
-    "VanillaSwap": 2,
+    "InterestRateSwap": 2,
     "Bond": 1,
     "Option": 1,
     "EquitySwap": (1, 2),   # 1 equity leg, optionally 1 funding leg
@@ -33,14 +33,14 @@ class TestTradeDataConsistency:
         for t in all_trades:
             assert len(t.legs) >= 1, f"{t.trade_id} has no legs"
 
-    def test_vanilla_swap_has_2_legs(self, all_trades):
-        swaps = [t for t in all_trades if t._trade_type == "VanillaSwap"]
+    def test_irs_has_2_legs(self, all_trades):
+        swaps = [t for t in all_trades if t._trade_type == "InterestRateSwap"]
         for s in swaps:
             assert len(s.legs) == 2, f"{s.trade_id} has {len(s.legs)} legs"
 
-    def test_vanilla_swap_leg_types(self, all_trades):
+    def test_irs_leg_types(self, all_trades):
         """FIXED_FLOAT and FLOAT_FIXED swaps must have FIXED+FLOAT legs; FIXED_FIXED two FIXED; FLOAT_FLOAT two FLOAT."""
-        swaps = [t for t in all_trades if t._trade_type == "VanillaSwap"]
+        swaps = [t for t in all_trades if t._trade_type == "InterestRateSwap"]
         for s in swaps:
             leg_types = {l.leg_type for l in s.legs}
             st = getattr(s, "swap_subtype", "FIXED_FLOAT")

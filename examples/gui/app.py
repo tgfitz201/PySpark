@@ -26,7 +26,7 @@ MAX_TREE  = 50   # trades shown per book in tree
 
 LEG_ICONS  = {"FIXED":"🔒","FLOAT":"🌊","BOND":"📄","OPTION":"⚙️",
                "EQUITY":"📈","CREDIT":"🛡️","EQUITY_OPTION":"🎯"}
-INST_ICONS = {"VanillaSwap":"🔄","InterestRateSwap":"🔄","Bond":"📄","Option":"⚙️",
+INST_ICONS = {"InterestRateSwap":"🔄","Bond":"📄","Option":"⚙️",
               "EquitySwap":"📈","CDS":"🛡️","EquityOption":"🎯","CrossCurrencySwap":"💱"}
 
 # leg_type -> (rate_field, display_multiplier, unit_label)
@@ -163,7 +163,7 @@ def _trades_to_df(trades:List[Dict]) -> pd.DataFrame:
             "valuation_date":  t.get("valuation_date",""),
             "n_legs":          len(legs)}
         # FX rate column for IRS/XCCY — only populate when non-unity
-        if inst in ("InterestRateSwap","VanillaSwap","CrossCurrencySwap"):
+        if inst in ("InterestRateSwap","CrossCurrencySwap"):
             fx = float(t.get("fx_rate", 1.0) or 1.0)
             row["fx_rate"] = fx
             # Show pay/recv ccy for multi-currency IRS
@@ -735,7 +735,7 @@ def render_detail(td:Optional[Dict], *, in_dialog:bool=False):
 
     tid  = td.get("trade_id","")
     inst = td.get("trade_type","")
-    disp = "InterestRateSwap" if inst == "VanillaSwap" else inst
+    disp = inst
 
     extra: Dict[str,Any] = {}
 
@@ -770,7 +770,7 @@ def render_detail(td:Optional[Dict], *, in_dialog:bool=False):
 
         STYPES = ["FIXED_FLOAT","FLOAT_FIXED","FIXED_FIXED","FLOAT_FLOAT"]
 
-        if inst in ("VanillaSwap","InterestRateSwap"):
+        if inst == "InterestRateSwap":
             ss = td.get("swap_subtype","FIXED_FLOAT")
             extra["swap_subtype"] = p2.selectbox("Swap Subtype", STYPES,
                 index=STYPES.index(ss) if ss in STYPES else 0, key=f"sst_{tid}_{sfx}")
@@ -927,7 +927,7 @@ def main():
         tid=st.session_state.sel_trade_id
         td=_fetch_one(tid) if tid else None
         inst=td.get("trade_type","") if td else ""
-        disp="InterestRateSwap" if inst=="VanillaSwap" else inst
+        disp=inst
         icon=INST_ICONS.get(inst,"📋")
         title = f"{icon} {tid} — {disp}" if td else "📋 Trade Detail"
         _panel_header(title, "po_detail",

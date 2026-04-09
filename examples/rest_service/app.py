@@ -16,10 +16,13 @@ Endpoints:
 
 from __future__ import annotations
 
+import functools
 import json
 import math
 import os
 import sys
+import threading
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -42,6 +45,49 @@ _DB_PATH = str(_PROJECT / "trades.db")
 
 app = FastAPI(title="Trade CRUD REST Service", version="1.0.0")
 
+# ── Caches ────────────────────────────────────────────────────────────────────
+# Curve: rebuilt once per process, shared across all concurrent pricing requests.
+# TTL: 5 minutes — refreshes automatically if market data changes.
+_CURVE_TTL = 300   # seconds
+_curve_lock = threading.Lock()
+_curve_cache: Dict[str, Any] = {"df": None, "ts": 0.0}
+
+
+def _get_curve_df():
+    """Return cached curve DataFrame, rebuilding if older than TTL."""
+    now = time.monotonic()
+    if _curve_cache["df"] is None or (now - _curve_cache["ts"]) > _CURVE_TTL:
+        with _curve_lock:
+            if _curve_cache["df"] is None or (now - _curve_cache["ts"]) > _CURVE_TTL:
+                from manage_trades import make_curve_df
+                _curve_cache["df"] = make_curve_df()
+                _curve_cache["ts"] = time.monotonic()
+    return _curve_cache["df"]
+
+
+def _invalidate_curve():
+    """Force curve rebuild on next request (call after market data update)."""
+    with _curve_lock:
+        _curve_cache["ts"] = 0.0
+
+
+# Trade cache: keyed by trade_id, max 5000 entries (full portfolio).
+# Invalidated individually on POST/PUT/DELETE.
+@functools.lru_cache(maxsize=5000)
+def _cached_trade(trade_id: str):
+    repo = _get_repo()
+    try:
+        return repo.get(trade_id)
+    finally:
+        repo.close()
+
+
+def _invalidate_trade(trade_id: str):
+    """Drop a single trade from the LRU cache after a write."""
+    # lru_cache has no per-key eviction; clear the whole cache — it's cheap to
+    # rebuild (SQLite reads are fast) and correctness beats micro-optimisation.
+    _cached_trade.cache_clear()
+
 
 def _get_repo() -> TradeRepository:
     return TradeRepository(_DB_PATH)
@@ -60,6 +106,36 @@ def _nan_safe(obj: Any) -> Any:
 
 def _trade_to_dict(trade: TradeBase) -> Dict[str, Any]:
     return _nan_safe(trade._to_enriched_dict())
+
+
+# ── Cache management ──────────────────────────────────────────────────────────
+
+@app.get("/cache/stats")
+def cache_stats() -> Dict[str, Any]:
+    ci = _cached_trade.cache_info()
+    age = time.monotonic() - _curve_cache["ts"] if _curve_cache["df"] is not None else None
+    return {
+        "trade_cache": {"hits": ci.hits, "misses": ci.misses,
+                        "size": ci.currsize, "maxsize": ci.maxsize},
+        "curve_cache": {"loaded": _curve_cache["df"] is not None,
+                        "age_seconds": round(age, 1) if age is not None else None,
+                        "ttl_seconds": _CURVE_TTL},
+    }
+
+
+@app.post("/cache/clear")
+def cache_clear() -> Dict[str, Any]:
+    _cached_trade.cache_clear()
+    _invalidate_curve()
+    return {"cleared": True}
+
+
+# ── Startup: warm curve + trade cache ─────────────────────────────────────────
+
+@app.on_event("startup")
+def _warm_cache():
+    """Pre-build the yield curve on startup so the first pricing request is fast."""
+    _get_curve_df()   # builds and caches the curve; trade cache warms on first access
 
 
 # ── Health ────────────────────────────────────────────────────────────────────
@@ -88,11 +164,7 @@ def list_trades() -> List[Dict[str, Any]]:
 
 @app.get("/trades/{trade_id}")
 def get_trade(trade_id: str) -> Dict[str, Any]:
-    repo = _get_repo()
-    try:
-        trade = repo.get(trade_id)
-    finally:
-        repo.close()
+    trade = _cached_trade(trade_id)
     if trade is None:
         raise HTTPException(status_code=404, detail=f"Trade '{trade_id}' not found")
     return _trade_to_dict(trade)
@@ -109,12 +181,13 @@ def create_trade(body: Dict[str, Any]) -> Dict[str, Any]:
         repo.upsert(trade)
     finally:
         repo.close()
+    _invalidate_trade(trade.trade_id)
     return _trade_to_dict(trade)
 
 
 @app.put("/trades/{trade_id}")
 def replace_trade(trade_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
-    body["trade_id"] = trade_id  # enforce trade_id from URL
+    body["trade_id"] = trade_id
     try:
         trade = TradeBase.fromJson(json.dumps(body))
     except Exception as e:
@@ -124,6 +197,7 @@ def replace_trade(trade_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
         repo.upsert(trade)
     finally:
         repo.close()
+    _invalidate_trade(trade_id)
     return _trade_to_dict(trade)
 
 
@@ -136,6 +210,7 @@ def delete_trade(trade_id: str) -> Dict[str, Any]:
         repo.close()
     if not deleted:
         raise HTTPException(status_code=404, detail=f"Trade '{trade_id}' not found")
+    _invalidate_trade(trade_id)
     return {"deleted": trade_id}
 
 
@@ -143,18 +218,12 @@ def delete_trade(trade_id: str) -> Dict[str, Any]:
 
 @app.get("/trades/{trade_id}/price")
 def price_trade(trade_id: str) -> Dict[str, Any]:
-    repo = _get_repo()
-    try:
-        trade = repo.get(trade_id)
-    finally:
-        repo.close()
+    trade = _cached_trade(trade_id)
     if trade is None:
         raise HTTPException(status_code=404, detail=f"Trade '{trade_id}' not found")
-
     try:
-        from manage_trades import _price_one, make_curve_df
-        curve_df = make_curve_df()
-        result = _price_one(trade, curve_df)
+        from manage_trades import _price_one
+        result = _price_one(trade, _get_curve_df())
         return _nan_safe(result)
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})

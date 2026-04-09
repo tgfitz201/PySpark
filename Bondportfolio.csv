@@ -1,12 +1,12 @@
 metric,value
 Instrument,BOND
-Trade Count,334
+Trade Count,300
 Error Count,0
-Total Notional,"$1,407,000,000"
-Total NPV,"$1,395,480,722.30"
-Total DV01,"$37,439.79"
-Long,167
-Short,167
-Avg Clean Px,99.1476
-Avg YTM,4.5942%
-Total Convexity,"34,299.1"
+Total Notional,"$1,255,000,000"
+Total NPV,"$1,245,046,984.93"
+Total DV01,$-606.90
+Long,154
+Short,146
+Avg Clean Px,99.1935
+Avg YTM,4.6019%
+Total Convexity,"29,908.4"

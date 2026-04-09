@@ -1,11 +1,11 @@
 metric,value
 Instrument,CDS
-Trade Count,333
+Trade Count,250
 Error Count,0
-Total Notional,"$3,885,000,000"
-Total NPV,"$-199,861.00"
-Total DV01,$383.14
-Buy,179
-Sell,154
-Total CR01,"$175,901.07"
-Total JTD,"$252,500,000"
+Total Notional,"$2,895,000,000"
+Total NPV,"$-172,646.35"
+Total DV01,$328.61
+Buy,137
+Sell,113
+Total CR01,"$176,213.02"
+Total JTD,"$239,250,000"

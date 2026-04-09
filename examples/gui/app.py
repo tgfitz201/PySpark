@@ -26,8 +26,18 @@ MAX_TREE  = 50   # trades shown per book in tree
 
 LEG_ICONS  = {"FIXED":"🔒","FLOAT":"🌊","BOND":"📄","OPTION":"⚙️",
                "EQUITY":"📈","CREDIT":"🛡️","EQUITY_OPTION":"🎯"}
-INST_ICONS = {"InterestRateSwap":"🔄","Bond":"📄","Option":"⚙️",
-              "EquitySwap":"📈","CDS":"🛡️","EquityOption":"🎯","CrossCurrencySwap":"💱"}
+INST_ICONS = {
+    "InterestRateSwap": "🔄",
+    "CrossCurrencySwap": "💱",
+    "Bond": "📄",
+    "AssetSwap": "🔗",
+    "OptionableBond": "📊",
+    "OptionTrade": "⚙️",
+    "InterestRateSwaption": "📐",
+    "EquitySwap": "📈",
+    "CreditDefaultSwap": "🛡️",
+    "EquityOptionTrade": "🎯",
+}
 
 # leg_type -> (rate_field, display_multiplier, unit_label)
 RATE_MAP: Dict[str,tuple] = {
@@ -152,9 +162,14 @@ def _trades_to_df(trades:List[Dict]) -> pd.DataFrame:
     for t in trades:
         legs=t.get("legs",[])
         inst=t.get("trade_type","")
+        # Map trade_type to display instrument code
+        if inst == "AssetSwap":
+            display_inst = "ASSWAP"
+        else:
+            display_inst = inst
         row:Dict[str,Any]={
             "trade_id":        t.get("trade_id",""),
-            "instrument":      inst,
+            "instrument":      display_inst,
             "book":            t.get("book",""),
             "tenor_y":         int(t.get("tenor_y") or 0),
             "direction":       t.get("direction",""),
@@ -838,6 +853,16 @@ def render_detail(td:Optional[Dict], *, in_dialog:bool=False):
                     "Conversion Premium", value=float(td.get("conversion_premium", 0.25) or 0.25),
                     min_value=0.0, max_value=2.0, step=0.01, format="%.3f",
                     key=f"cprem_{tid}_{sfx}"))
+
+        elif inst == "AssetSwap":
+            q1, q2, q3 = st.columns(3)
+            extra["tenor_y"]   = int(q1.number_input("Tenor (years)", value=int(td.get("tenor_y",5) or 5),
+                                  min_value=1, max_value=30, step=1, key=f"asy_{tid}_{sfx}"))
+            extra["isin"]      = q2.text_input("ISIN", value=td.get("isin","") or "",
+                                                key=f"asn_{tid}_{sfx}")
+            extra["par_price"] = float(q3.number_input("Par Price", value=float(td.get("par_price",100.0) or 100.0),
+                                    min_value=50.0, max_value=150.0, step=0.25, format="%.2f",
+                                    key=f"asp_{tid}_{sfx}"))
 
         elif inst == "Option":
             extra["underlying_tenor_y"] = _ii(p2.number_input("Underlying Tenor (yrs)",

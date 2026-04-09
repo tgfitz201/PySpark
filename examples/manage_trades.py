@@ -2,9 +2,9 @@
 """
 manage_trades.py  —  Multi-instrument Pricer and Trade Manager
 =============================================================
-  Instruments : InterestRateSwap (IRS) | Bond | OptionTrade (swaptions)
-              | EquitySwap (TRS)  | CreditDefaultSwap (CDS)
-              | EquityOption
+  Instruments : InterestRateSwap | CrossCurrencySwap | Bond | AssetSwap
+              | OptionableBond (CALLABLE/PUTABLE/CONVERTIBLE/EXTENDABLE/SINKING_FUND)
+              | OptionTrade | InterestRateSwaption | EquitySwap | CDS | EquityOptionTrade
   Framework   : QuantLib 1.41 + PySpark 4.0 (pandas UDF)
   Curve       : Single-curve SOFR  (discount & forward)
   Greeks      : DV01, Duration, PV01, Convexity, Vega, Theta, Delta, CR01, JTD
@@ -13,7 +13,7 @@ manage_trades.py  —  Multi-instrument Pricer and Trade Manager
 
   Workflow
   --------
-  RUN-1  Generate 100 trades per instrument type, price, save to DB + CSVs.
+  RUN-1  Generate 3000 trades across 10 traders / 3 books each, price, save to DB + CSVs.
   RUN-2  Reload all trades from DB, re-price, compare NPVs against RUN-1.
 """
 
@@ -48,7 +48,7 @@ from tabulate import tabulate
 
 from models import (TradeBase, BaseLeg, FixedLeg, FloatLeg, OptionLeg, EquityLeg,
                     CreditLeg, CDSPremiumLeg, CDSProtectionLeg, EquityOptionLeg,
-                    InterestRateSwap, InterestRateSwaption, Bond,
+                    InterestRateSwap, InterestRateSwaption, Bond, AssetSwap,
                     OptionableBond,
                     OptionTrade, EquitySwap,
                     CreditDefaultSwap,
@@ -214,6 +214,60 @@ def make_bond_data(n: int = 50) -> List[Bond]:
     return bonds
 
 
+def make_asset_swap_data(n: int = 250, traders=None, books=None) -> List[AssetSwap]:
+    """Generate n AssetSwap trades: bond + pay-float IRS."""
+    import random
+    random.seed(77)
+    base = VALUATION_DATE
+    tenors  = [2, 3, 5, 7, 10]
+    faces   = [5_000_000, 10_000_000, 20_000_000, 50_000_000]
+    default_traders = ["Sarah Chen", "Alex Morrison"]
+    default_books   = ["ASSWAP-IG", "BOND-IG", "BOND-GOV"]
+    _traders = traders or default_traders
+    _books   = books or default_books
+
+    trades: List[AssetSwap] = []
+    for i in range(n):
+        tenor_y   = random.choice(tenors)
+        face      = float(random.choice(faces))
+        direction = TradeDirection.LONG if random.random() < 0.6 else TradeDirection.SHORT
+        par_coupon = MKT.get_par_rate(tenor_y)
+        coupon    = round(par_coupon + random.uniform(-0.010, 0.020), 4)
+        coupon    = max(0.030, min(0.065, coupon))
+        issued    = base
+        try:
+            mat = date(base.year + tenor_y, base.month, base.day)
+        except ValueError:
+            mat = date(base.year + tenor_y, base.month, 28)
+        spread = round(random.uniform(-0.005, 0.025), 5)   # float leg spread
+
+        bond_leg = BaseLeg(
+            "BOND", face, issued, mat,
+            coupon_rate=coupon, day_count="30/360",
+            frequency="SEMIANNUAL", redemption=100.0,
+            settlement_days=2, issue_date=issued,
+        )
+        float_leg = FloatLeg(
+            "FLOAT", face, issued, mat,
+            spread=spread, index_name="SOFR3M",
+            index_tenor_m=3, frequency="QUARTERLY",
+            day_count="ACT/360",
+        )
+        trades.append(AssetSwap(
+            trade_id     = f"ASSWAP-{i+1:04d}",
+            book         = random.choice(_books),
+            counterparty = f"CPTY-{random.randint(1,20):02d}",
+            trader       = random.choice(_traders),
+            valuation_date = base,
+            direction    = direction,
+            tenor_y      = tenor_y,
+            isin         = f"US{i+9001:09d}",
+            par_price    = 100.0,
+            legs         = [bond_leg, float_leg],
+        ))
+    return trades
+
+
 def make_option_data(n: int = 50) -> List[OptionTrade]:
     """Generate n vanilla SOFR swaptions (Payer/Receiver, Buy/Sell)."""
     import random
@@ -298,14 +352,15 @@ def make_irs_swaption_data(
                        15_000_000, 20_000_000, 10_000_000, 15_000_000, 20_000_000]
 
     trades = []
-    for i in range(min(n, 10)):
-        exp_y   = expiry_tenors[i]
-        und_y   = undly_tenors[i]
-        notl    = notionals[i]
-        cpn     = coupons[i]
-        vol     = vols[i]
-        otype   = option_types[i]
-        dirn    = directions[i]
+    for i in range(n):
+        j       = i % 10   # cycle through the 10-item template arrays
+        exp_y   = expiry_tenors[j]
+        und_y   = undly_tenors[j]
+        notl    = notionals[j]
+        cpn     = coupons[j]
+        vol     = vols[j]
+        otype   = option_types[j]
+        dirn    = directions[j]
 
         # Dates
         expiry_dt = valuation_date.replace(year=valuation_date.year + exp_y)
@@ -758,71 +813,139 @@ def make_xccy_irs_data(n: int = 50, valuation_date=None) -> list:
 
     return trades
 
-def populate_trades(
-    n_trades: int = 2000,
-    n_traders: int = 10,
-    n_books: int = 20,
-    valuation_date=None,
-) -> List[TradeBase]:
-    """
-    Generate n_trades evenly split across 6 instrument types, with configurable
-    traders/books/counterparties.  Uses random.seed(42) for reproducibility.
-    """
-    import random
-    random.seed(42)
 
-    if valuation_date is None:
-        valuation_date = VALUATION_DATE
+# ── Trader/Book definitions ────────────────────────────────────────────────
+TRADERS = {
+    "Alex Morrison":   ["RATES-G10",      "RATES-EM",       "RATES-STIR"],
+    "Sarah Chen":      ["BOND-GOV",        "BOND-IG",        "ASSWAP-IG"],
+    "Marcus Williams": ["CREDIT-IG",       "CREDIT-HY",      "CDS-INDEX"],
+    "Emily Rodriguez": ["EQ-DELTA",        "EQ-GAMMA",       "EQ-STRUCT"],
+    "David Park":      ["OPT-SWAPTION",    "OPT-CAP",        "OPT-FLOOR"],
+    "James O'Brien":   ["XCCY-G10",        "XCCY-EM",        "XCCY-BASIS"],
+    "Lisa Zhang":      ["EQOPT-VANILLA",   "EQOPT-EXOTIC",   "EQOPT-DELTA"],
+    "Robert Patel":    ["OBOND-CALL",      "OBOND-CONV",     "OBOND-SINK"],
+    "Maria Santos":    ["EQSWAP-TRS",      "EQSWAP-DIV",     "EQSWAP-IDX"],
+    "Kevin Thompson":  ["IRS-LONG",        "IRS-SHORT",      "IRS-BASIS"],
+}
 
-    # ── Pools ─────────────────────────────────────────────────────────────────
-    all_books_by_type = {
-        "IRS":   ["IRD-NY", "IRD-LDN", "IRD-ASIA", "IRD-TOKYO"],
-        "BOND":  ["BOND-NY", "BOND-LDN", "BOND-ASIA"],
-        "OPT":   ["OPT-NY", "OPT-LDN", "OPT-ASIA"],
-        "EQ":    ["EQ-NY", "EQ-LDN", "EQ-ASIA"],
-        "CDS":   ["CDS-NY", "CDS-LDN", "CDS-ASIA"],
-        "EQOPT": ["EQOPT-NY", "EQOPT-LDN", "EQOPT-ASIA"],
-        "MACRO": ["MACRO"],
+
+def populate_trades() -> List:
+    """
+    Generate 3000 synthetic trades across all instrument types.
+    10 traders × 3 books each; books are themed by instrument type.
+    Distribution:
+      InterestRateSwap   : 450  (Alex Morrison, Kevin Thompson)
+      Bond               : 300  (Sarah Chen)
+      AssetSwap          : 250  (Sarah Chen)
+      CrossCurrencySwap  : 200  (James O'Brien)
+      OptionableBond     : 400  (Robert Patel — 80 per subtype)
+      OptionTrade        : 200  (David Park)
+      InterestRateSwaption: 200 (David Park)
+      EquitySwap         : 250  (Maria Santos)
+      CreditDefaultSwap  : 250  (Marcus Williams)
+      EquityOptionTrade  : 300  (Lisa Zhang, Emily Rodriguez)
+      Total: 3000
+    """
+    all_trades = []
+
+    # IRS — Alex Morrison + Kevin Thompson
+    irs_trades   = make_irs_data(n=450)
+    irs_books_am = TRADERS["Alex Morrison"]
+    irs_books_kt = TRADERS["Kevin Thompson"]
+    for i, t in enumerate(irs_trades):
+        if i < 250:
+            t.trader = "Alex Morrison"
+            t.book   = irs_books_am[i % 3]
+        else:
+            t.trader = "Kevin Thompson"
+            t.book   = irs_books_kt[i % 3]
+    all_trades.extend(irs_trades)
+
+    # Bond — Sarah Chen
+    bond_trades = make_bond_data(n=300)
+    books_sc = TRADERS["Sarah Chen"]
+    for i, t in enumerate(bond_trades):
+        t.trader = "Sarah Chen"
+        t.book   = books_sc[i % 2]   # BOND-GOV or BOND-IG
+    all_trades.extend(bond_trades)
+
+    # AssetSwap — Sarah Chen
+    asw_trades = make_asset_swap_data(n=250)
+    for i, t in enumerate(asw_trades):
+        t.trader = "Sarah Chen"
+        t.book   = "ASSWAP-IG"
+    all_trades.extend(asw_trades)
+
+    # CrossCurrencySwap — James O'Brien
+    xccy_trades = make_xccy_irs_data(n=200)
+    books_jo = TRADERS["James O'Brien"]
+    for i, t in enumerate(xccy_trades):
+        t.trader = "James O'Brien"
+        t.book   = books_jo[i % 3]
+    all_trades.extend(xccy_trades)
+
+    # OptionableBond — Robert Patel (80 per subtype × 5 = 400)
+    obond_trades = make_optionable_bond_data(n=400)
+    subtype_book = {
+        "CALLABLE": "OBOND-CALL", "PUTABLE": "OBOND-CALL",
+        "CONVERTIBLE": "OBOND-CONV", "EXTENDABLE": "OBOND-CONV",
+        "SINKING_FUND": "OBOND-SINK",
     }
-    traders = [f"T{i:03d}" for i in range(1, n_traders + 1)]
-    cptys   = [f"CPTY-{i:02d}" for i in range(1, 11)]
+    for t in obond_trades:
+        t.trader = "Robert Patel"
+        t.book   = subtype_book.get(getattr(t, "bond_subtype", "CALLABLE"), "OBOND-CALL")
+    all_trades.extend(obond_trades)
 
-    # ── Per-type counts (remainder distributed to first types) ────────────────
-    base   = n_trades // 6
-    counts = [base] * 6
-    for i in range(n_trades - base * 6):
-        counts[i] += 1
-    n_irs, n_bond, n_opt, n_eq, n_cds, n_eqopt = counts
+    # OptionTrade — David Park
+    opt_trades = make_option_data(n=200)
+    books_dp = TRADERS["David Park"]
+    for i, t in enumerate(opt_trades):
+        t.trader = "David Park"
+        t.book   = books_dp[i % 3]
+    all_trades.extend(opt_trades)
 
-    # ── Generate using existing functions ─────────────────────────────────────
-    irs_trades   = make_irs_data(n_irs)
-    bond_trades  = make_bond_data(n_bond)
-    opt_trades   = make_option_data(n_opt)
-    eq_trades    = make_equity_data(n_eq)
-    cds_trades   = make_cds_data(n_cds)
-    eqopt_trades = make_equity_option_data(n_eqopt)
-    xccy_trades  = make_xccy_irs_data(50, valuation_date)  # XCCY-LDN book
+    # InterestRateSwaption — David Park
+    swpn_trades = make_irs_swaption_data(n=200)
+    for i, t in enumerate(swpn_trades):
+        t.trader = "David Park"
+        t.book   = "OPT-SWAPTION"
+    all_trades.extend(swpn_trades)
 
-    # ── Patch book / trader / counterparty for each type ──────────────────────
-    macro = all_books_by_type["MACRO"][0]
+    # EquitySwap — Maria Santos
+    eq_trades = make_equity_data(n=250)
+    books_ms = TRADERS["Maria Santos"]
+    for i, t in enumerate(eq_trades):
+        t.trader = "Maria Santos"
+        t.book   = books_ms[i % 3]
+    all_trades.extend(eq_trades)
 
-    def _patch(trade_list, type_books):
-        for t in trade_list:
-            t.book         = random.choice(type_books)
-            t.trader       = random.choice(traders)
-            t.counterparty = random.choice(cptys)
+    # CreditDefaultSwap — Marcus Williams
+    cds_trades = make_cds_data(n=250)
+    books_mw = TRADERS["Marcus Williams"]
+    for i, t in enumerate(cds_trades):
+        t.trader = "Marcus Williams"
+        t.book   = books_mw[i % 3]
+    all_trades.extend(cds_trades)
 
-    _patch(irs_trades,   all_books_by_type["IRS"]   + [macro])
-    _patch(bond_trades,  all_books_by_type["BOND"]  + [macro])
-    _patch(opt_trades,   all_books_by_type["OPT"]   + [macro])
-    _patch(eq_trades,    all_books_by_type["EQ"]    + [macro])
-    _patch(cds_trades,   all_books_by_type["CDS"]   + [macro])
-    _patch(eqopt_trades, all_books_by_type["EQOPT"] + [macro])
-    # xccy_trades already have book/trader/counterparty set in make_xccy_irs_data
+    # EquityOptionTrade — Lisa Zhang + Emily Rodriguez
+    eqopt_trades = make_equity_option_data(n=300)
+    books_lz = TRADERS["Lisa Zhang"]
+    books_er = TRADERS["Emily Rodriguez"]
+    for i, t in enumerate(eqopt_trades):
+        if i < 200:
+            t.trader = "Lisa Zhang"
+            t.book   = books_lz[i % 3]
+        else:
+            t.trader = "Emily Rodriguez"
+            t.book   = books_er[i % 3]
+    all_trades.extend(eqopt_trades)
 
-    obond_trades = make_optionable_bond_data(100)
-    _patch(obond_trades, all_books_by_type["BOND"] + [macro])
-    return irs_trades + bond_trades + opt_trades + eq_trades + cds_trades + eqopt_trades + xccy_trades + obond_trades
+    print(f"Generated {len(all_trades)} trades across {len(TRADERS)} traders")
+    from collections import Counter
+    counts = Counter(type(t).__name__ for t in all_trades)
+    for k, v in sorted(counts.items()):
+        print(f"  {k:<25} {v:>4}")
+    return all_trades
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2292,7 +2415,8 @@ def run_pricing(n_irs: int = 50, n_bonds: int = 50, n_opts: int = 50,
         if isinstance(t, CreditDefaultSwap):    return "CDS"
         if isinstance(t, InterestRateSwaption): return "IRS_SWPTN"
         if isinstance(t, OptionTrade):          return "SWAPTION"
-        if isinstance(t, InterestRateSwap):  return "IRS"
+        if isinstance(t, InterestRateSwap):     return "IRS"
+        if isinstance(t, AssetSwap):            return "ASSWAP"
         if isinstance(t, OptionableBond):
             sub = getattr(t, "bond_subtype", "CALLABLE")
             return {"CALLABLE": "CBOND", "PUTABLE": "CBOND",
@@ -2301,7 +2425,7 @@ def run_pricing(n_irs: int = 50, n_bonds: int = 50, n_opts: int = 50,
         return "BOND"
 
     def _notional(t):
-        return t.legs[0].notional
+        return float(t.legs[0].notional)
 
     def _coupon(t):
         if isinstance(t, EquityOptionTrade):
@@ -2311,6 +2435,7 @@ def run_pricing(n_irs: int = 50, n_bonds: int = 50, n_opts: int = 50,
         if isinstance(t, InterestRateSwap):
             fl = t.fixed_leg
             return fl.coupon_rate if fl is not None else (t.legs[0].spread if t.legs else 0.0)
+        if isinstance(t, AssetSwap):         return t.bond_leg.coupon_rate
         if isinstance(t, Bond):              return t.bond_leg.coupon_rate
         if isinstance(t, OptionableBond):    return t.bond_leg.coupon_rate
         if isinstance(t, OptionTrade):       return t.option_leg.strike
@@ -2599,6 +2724,19 @@ def build_pricing_results(all_trades: list, records: list) -> List[PricingResult
                 pr.vol           = getattr(ol, 'vol', _NAN_F)
                 pr.swap_subtype  = sub
 
+        elif isinstance(trade, AssetSwap):
+            pr.instrument  = "ASSWAP"
+            pr.swap_subtype = "ASSET_SWAP"
+            pr.leg_count   = len(trade.legs)
+            pr.leg_types   = "BOND,FLOAT"
+            bl = trade.bond_leg
+            pr.notional    = bl.notional
+            pr.coupon_rate = bl.coupon_rate
+            pr.start_date  = str(bl.start_date)
+            pr.end_date    = str(bl.end_date)
+            pr.currency    = bl.currency
+            pr.tenor_y     = trade.tenor_y
+
         else:  # Bond
             pr.instrument = "BOND"
             pr.leg_count  = len(trade.legs)
@@ -2702,8 +2840,6 @@ def print_results(records_or_df, project_dir: str) -> None:
         print(sep)
         t_cbond = pd.DataFrame({
             "Trade":     cbonds["trade_id"],
-            "Type":      cbonds["option_type"].map(
-                lambda x: "CALLABLE" if x == "CALL" else "PUTABLE"),
             "Dir":       cbonds["direction"],
             "Face$M":    (cbonds["notional"] / 1e6).map("{:.1f}".format),
             "Tnr":       cbonds["tenor_y"].map("{}y".format),
@@ -3024,6 +3160,7 @@ def save_all_csvs(all_trades: list, records_or_df, out_dir: str) -> None:
     asset_map = {
         "IRS":      "IRS",
         "BOND":     "Bond",
+        "ASSWAP":   "AssetSwap",
         "CBOND":    "OptionableBond",
         "CVTBL":    "ConvertibleBond",
         "EXTBL":    "ExtendableBond",
@@ -3450,6 +3587,20 @@ def _sanity_check_results(df_or_records) -> None:
         checks.append(("EqOpt: CALL delta>0 (BUY), PUT delta<0 (BUY)",
                         call_d_ok and put_d_ok,
                         f"buy_calls={len(calls_buy)} buy_puts={len(puts_buy)}"))
+
+    # ── AssetSwap ─────────────────────────────────────────────────────────────
+    asswap_r = [r for r in recs if _s(r, "instrument") == "ASSWAP"]
+    if asswap_r:
+        import math
+        fails = 0
+        for r in asswap_r:
+            npv = _f(r, "swap_npv"); spread_bps = _f(r, "delta")
+            if not math.isfinite(npv) or not (-50_000_000 < npv < 50_000_000): fails += 1
+            if not math.isfinite(spread_bps) or not (-500 < spread_bps < 500): fails += 1
+        total_checks = len(asswap_r) * 2
+        pct = 100.0 * (1 - fails / total_checks) if total_checks > 0 else 0.0
+        checks.append(("ASSWAP: NPV in range & spread -500..500bps",
+                        fails == 0, f"{len(asswap_r)} trades  sanity={pct:.1f}%"))
 
     # ── Print results ─────────────────────────────────────────────────────────
     passed = sum(1 for _, ok, _ in checks if ok is True)

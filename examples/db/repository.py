@@ -157,6 +157,12 @@ CREATE TABLE IF NOT EXISTS OptionableBond (
     sinking_pct_per_period REAL    DEFAULT 0.0,
     conversion_premium     REAL    DEFAULT 0.0
 );
+CREATE TABLE IF NOT EXISTS AssetSwap (
+    trade_id  TEXT PRIMARY KEY REFERENCES TradeBase(trade_id) ON DELETE CASCADE,
+    tenor_y   INTEGER DEFAULT 0,
+    isin      TEXT    DEFAULT '',
+    par_price REAL    DEFAULT 100.0
+);
 
 CREATE TABLE IF NOT EXISTS BaseLeg (
     leg_id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -295,6 +301,7 @@ _TRADE_TYPE_TO_SUBTABLE: Dict[str, str] = {
     "InterestRateSwap":  "InterestRateSwap",
     "CrossCurrencySwap": "CrossCurrencySwap",
     "Bond":              "Bond",
+    "AssetSwap":         "AssetSwap",
     "OptionableBond":    "OptionableBond",
     "Option":            "OptionTrade",
     "IRSwaption":        "OptionTrade",   # shares OptionTrade subtable
@@ -536,6 +543,18 @@ class TradeRepository:
             """)
         except Exception:
             pass
+        # Create AssetSwap table if it doesn't exist (for older DBs)
+        try:
+            self._conn.execute("""
+                CREATE TABLE IF NOT EXISTS AssetSwap (
+                    trade_id  TEXT PRIMARY KEY REFERENCES TradeBase(trade_id) ON DELETE CASCADE,
+                    tenor_y   INTEGER DEFAULT 0,
+                    isin      TEXT    DEFAULT '',
+                    par_price REAL    DEFAULT 100.0
+                )
+            """)
+        except Exception:
+            pass
         self._conn.commit()
 
     # ── helpers ───────────────────────────────────────────────────────────────
@@ -642,6 +661,14 @@ class TradeRepository:
                      getattr(trade, "bond_subtype", "CALLABLE"),
                      getattr(trade, "sinking_pct_per_period", 0.0),
                      getattr(trade, "conversion_premium", 0.0)),
+                )
+            elif subtable == "AssetSwap":
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO AssetSwap (trade_id, tenor_y, isin, par_price) VALUES (?, ?, ?, ?)",
+                    (trade.trade_id,
+                     getattr(trade, "tenor_y", 0),
+                     getattr(trade, "isin", "") or "",
+                     getattr(trade, "par_price", 100.0))
                 )
 
             # 3. Refresh legs
@@ -895,6 +922,14 @@ class TradeRepository:
                 bond_subtype=sub.get("bond_subtype") or "CALLABLE",
                 sinking_pct_per_period=float(sub.get("sinking_pct_per_period") or 0.0),
                 conversion_premium=float(sub.get("conversion_premium") or 0.0),
+            )
+        if trade_type == "AssetSwap":
+            from models.asset_swap import AssetSwap
+            return AssetSwap(
+                **common,
+                tenor_y=int(sub.get("tenor_y") or 0),
+                isin=sub.get("isin") or None,
+                par_price=float(sub.get("par_price") or 100.0),
             )
 
         # Fallback: try generic fromJson path via old trades table

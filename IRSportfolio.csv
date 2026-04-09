@@ -1,14 +1,14 @@
 metric,value
 Instrument,IRS
-Trade Count,650
+Trade Count,715
 Error Count,0
-Total Notional,"$14,190,000,000"
-Total NPV,"$-42,549,114.77"
-Total DV01,"$393,549.84"
-Payers,412
-Receivers,238
-Avg Par Rate,4.7364%
-  FIXED_FLOAT,224
-  FLOAT_FIXED,177
-  FIXED_FIXED,130
-  FLOAT_FLOAT,119
+Total Notional,"$18,441,000,000"
+Total NPV,"$-219,546,794.02"
+Total DV01,"$-115,968.54"
+Payers,418
+Receivers,297
+Avg Par Rate,4.8131%
+  FIXED_FLOAT,221
+  FLOAT_FIXED,201
+  FIXED_FIXED,148
+  FLOAT_FLOAT,145

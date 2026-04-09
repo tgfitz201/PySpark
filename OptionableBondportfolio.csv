@@ -1,7 +1,7 @@
 metric,value
 Instrument,CBOND
-Trade Count,160
+Trade Count,714
 Error Count,0
-Total Notional,"$3,470,000,000"
-Total NPV,"$3,443,441,086.22"
-Total DV01,"$-537,352.57"
+Total Notional,"$15,400,000,000"
+Total NPV,"$15,282,854,512.93"
+Total DV01,"$-776,255.57"

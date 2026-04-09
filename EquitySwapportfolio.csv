@@ -1,12 +1,12 @@
 metric,value
 Instrument,EQ_SWAP
-Trade Count,250
+Trade Count,357
 Error Count,0
-Total Notional,"$5,625,000,000"
-Total NPV,"$-27,814,255.04"
-Total DV01,"$-91,186.79"
-Long,127
-Short,123
-Total EQ NPV,"$-27,814,255.04"
-Total Delta,"$-3,450,000"
-Total EQ DV01,"$-91,186.79"
+Total Notional,"$8,110,000,000"
+Total NPV,"$-19,284,198.28"
+Total DV01,"$-73,688.33"
+Long,180
+Short,177
+Total EQ NPV,"$-19,284,198.28"
+Total Delta,"$-2,100,000"
+Total EQ DV01,"$-73,688.33"

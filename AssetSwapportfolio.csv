@@ -1,7 +1,7 @@
 metric,value
 Instrument,ASSWAP
-Trade Count,250
+Trade Count,357
 Error Count,0
-Total Notional,"$5,170,000,000"
-Total NPV,"$5,246,943,522.71"
-Total DV01,"$-594,450.24"
+Total Notional,"$7,540,000,000"
+Total NPV,"$7,651,393,504.93"
+Total DV01,"$-888,013.91"

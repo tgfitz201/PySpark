@@ -1,12 +1,12 @@
 metric,value
 Instrument,SWAPTION
-Trade Count,200
+Trade Count,357
 Error Count,0
-Total Notional,"$3,960,000,000"
-Total NPV,"$33,909,002.13"
-Total DV01,"$-46,783.36"
-Buy,93
-Sell,107
-Total Premium,"$33,909,002.13"
-Total Vega,"$608,182.44"
-Total Theta,"$-12,144.54"
+Total Notional,"$7,160,000,000"
+Total NPV,"$34,680,890.26"
+Total DV01,"$-201,592.69"
+Buy,171
+Sell,186
+Total Premium,"$34,680,890.26"
+Total Vega,"$694,107.05"
+Total Theta,"$-11,487.89"

@@ -1,7 +1,7 @@
 metric,value
 Instrument,EXTBL
-Trade Count,80
+Trade Count,357
 Error Count,0
-Total Notional,"$1,675,000,000"
-Total NPV,"$1,687,871,068.66"
-Total DV01,"$-265,550.15"
+Total Notional,"$7,560,000,000"
+Total NPV,"$7,643,208,470.32"
+Total DV01,"$-586,571.88"

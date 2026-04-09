@@ -1,7 +1,7 @@
 metric,value
 Instrument,SINKBL
-Trade Count,80
+Trade Count,357
 Error Count,0
-Total Notional,"$1,605,000,000"
-Total NPV,"$1,587,117,979.25"
-Total DV01,"$-1,236.75"
+Total Notional,"$7,610,000,000"
+Total NPV,"$7,533,869,185.53"
+Total DV01,"$400,464.89"

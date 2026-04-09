@@ -93,3 +93,7 @@ class EquitySwap(TradeBase, trade_type="EquitySwap"):
             } if fl else None,
             "tenor_y": self.tenor_y,
         }
+
+    def price(self, curve_df):
+        from pricing.equity_pricer import price_equity_swap
+        return price_equity_swap(self, curve_df)

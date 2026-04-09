@@ -68,3 +68,7 @@ class EquityOptionTrade(TradeBase, trade_type="EquityOption"):
             "is_put":    self.is_put,
             "tenor_y":   self.tenor_y,
         }
+
+    def price(self, curve_df):
+        from pricing.equity_pricer import price_equity_option
+        return price_equity_option(self, curve_df)

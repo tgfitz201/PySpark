@@ -88,3 +88,7 @@ class OptionTrade(TradeBase, trade_type="Option"):
             "expiry_tenor_y":      self.tenor_y,
             "underlying_tenor_y":  self.underlying_tenor_y,
         }
+
+    def price(self, curve_df):
+        from pricing.option_pricer import price_option
+        return price_option(self, curve_df)

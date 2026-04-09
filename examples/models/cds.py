@@ -106,3 +106,7 @@ class CreditDefaultSwap(TradeBase, trade_type="CDS"):
             "tenor_y":   self.tenor_y,
             "direction": self.direction.value,
         }
+
+    def price(self, curve_df):
+        from pricing.cds_pricer import price_cds
+        return price_cds(self, curve_df)

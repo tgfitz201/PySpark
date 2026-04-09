@@ -33,3 +33,7 @@ class CrossCurrencySwap(TradeBase, trade_type="CrossCurrencySwap"):
     @property
     def receive_leg(self) -> Optional[BaseLeg]:
         return self.legs[1] if len(self.legs) > 1 else None
+
+    def price(self, curve_df):
+        from pricing.swap_pricer import price_xccy
+        return price_xccy(self, curve_df)

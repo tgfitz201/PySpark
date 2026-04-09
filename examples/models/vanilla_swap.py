@@ -108,3 +108,7 @@ class VanillaSwap(TradeBase, trade_type="VanillaSwap"):
             } if vl else None,
         }
         return props
+
+    def price(self, curve_df):
+        from pricing.swap_pricer import price_swap
+        return price_swap(self, curve_df)

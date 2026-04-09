@@ -2283,40 +2283,12 @@ def _price_equity_option(trade, curve_df: pd.DataFrame) -> Dict[str, Any]:
 # ─── Dispatcher ───────────────────────────────────────────────────────────────
 
 def _price_one(trade, curve_df: pd.DataFrame) -> Dict[str, Any]:
-    """Dispatch to the correct pricer based on trade type."""
-    from models.interest_rate_swap import InterestRateSwap
-    from models.cross_currency_swap import CrossCurrencySwap
-    from models.interest_rate_swaption import InterestRateSwaption
-    from models.callable_bond import CallableBond
-    from models.optionable_bond import OptionableBond
+    """Delegate pricing to the trade object's own price() method."""
     try:
-        if isinstance(trade, EquityOptionTrade):
-            return _price_equity_option(trade, curve_df)
-        if isinstance(trade, EquitySwap):
-            return _price_equity_swap(trade, curve_df)
-        elif isinstance(trade, CreditDefaultSwap):
-            return _price_cds(trade, curve_df)
-        elif isinstance(trade, InterestRateSwaption):
-            return _price_irs_swaption(trade, curve_df)
-        elif isinstance(trade, OptionTrade):
-            return _price_option(trade, curve_df)
-        elif isinstance(trade, (VanillaSwap, InterestRateSwap)):
-            # Multi-currency legs → cross-currency pricer
-            ccys = {l.currency for l in trade.legs if l.currency}
-            if len(ccys) > 1:
-                return _price_xccy(trade, curve_df)
-            return _price_swap(trade, curve_df)
-        elif isinstance(trade, CrossCurrencySwap):
-            return _price_xccy(trade, curve_df)
-        elif isinstance(trade, OptionableBond):
-            return _price_optionable_bond(trade, curve_df)
-        elif isinstance(trade, CallableBond):
-            return _price_callable_bond(trade, curve_df)
-        elif isinstance(trade, Bond):
-            return _price_bond(trade, curve_df)
-        return {**_NAN_ROW, "error": f"Unknown: {type(trade).__name__}"}
-    except Exception as exc:
-        return {**_NAN_ROW, "error": str(exc)[:200]}
+        return trade.price(curve_df)
+    except Exception as e:
+        from pricing.utils import _NAN_ROW
+        return {**_NAN_ROW, "error": str(e)}
 
 
 # ══════════════════════════════════════════════════════════════════════════════

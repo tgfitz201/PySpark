@@ -73,3 +73,7 @@ class Bond(TradeBase, trade_type="Bond"):
             "isin": self.isin,
             "tenor_y": self.tenor_y,
         }
+
+    def price(self, curve_df):
+        from pricing.bond_pricer import price_bond
+        return price_bond(self, curve_df)

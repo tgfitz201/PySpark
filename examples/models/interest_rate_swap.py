@@ -53,3 +53,7 @@ class InterestRateSwap(TradeBase, trade_type="InterestRateSwap"):
     @property
     def float_leg(self) -> Optional[BaseLeg]:
         fl = self.float_legs; return fl[0] if fl else None
+
+    def price(self, curve_df):
+        from pricing.swap_pricer import price_irs
+        return price_irs(self, curve_df)

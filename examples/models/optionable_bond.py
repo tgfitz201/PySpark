@@ -88,3 +88,7 @@ class OptionableBond(TradeBase, trade_type="OptionableBond"):
         if self.bond_subtype == "CONVERTIBLE":
             props["conversion_premium"] = self.conversion_premium
         return props
+
+    def price(self, curve_df):
+        from pricing.optionable_bond_pricer import price_optionable_bond
+        return price_optionable_bond(self, curve_df)

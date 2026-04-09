@@ -864,7 +864,7 @@ def render_detail(td:Optional[Dict], *, in_dialog:bool=False):
                                     min_value=50.0, max_value=150.0, step=0.25, format="%.2f",
                                     key=f"asp_{tid}_{sfx}"))
 
-        elif inst == "Option":
+        elif inst == "OptionTrade":
             extra["underlying_tenor_y"] = _ii(p2.number_input("Underlying Tenor (yrs)",
                 value=_ii(td.get("underlying_tenor_y",0)), min_value=0, max_value=50,
                 step=1, key=f"utny_{tid}_{sfx}"))
@@ -875,12 +875,54 @@ def render_detail(td:Optional[Dict], *, in_dialog:bool=False):
                 value=td.get("underlying_ticker",""), key=f"utk_{tid}_{sfx}")
             p3.markdown("")
 
-        elif inst == "EquityOption":
+        elif inst == "EquityOptionTrade":
             extra["underlying_tenor_y"] = _ii(p2.number_input("Underlying Tenor (yrs)",
                 value=_ii(td.get("underlying_tenor_y",0)), min_value=0, max_value=50,
                 step=1, key=f"eutny_{tid}_{sfx}"))
             extra["underlying_ticker"] = p3.text_input("Underlying Ticker",
                 value=td.get("underlying_ticker",""), key=f"eutk_{tid}_{sfx}")
+
+        elif inst == "CreditDefaultSwap":
+            cl = td.get("legs", [{}])[0] if td.get("legs") else {}
+            extra["tenor_y"] = _ii(p1.number_input("Tenor (yrs)",
+                value=_ii(td.get("tenor_y", 5)), min_value=1, max_value=10, step=1,
+                key=f"cdsy_{tid}_{sfx}"))
+            ref_ent = cl.get("reference_entity", td.get("reference_entity", ""))
+            extra["reference_entity"] = p2.text_input("Reference Entity",
+                value=ref_ent, key=f"cdse_{tid}_{sfx}")
+            raw_spd = cl.get("credit_spread", td.get("credit_spread", 0.01))
+            try:
+                spd_bps = float(raw_spd) * 10000
+            except (TypeError, ValueError):
+                spd_bps = 100.0
+            spd_val = p3.number_input("Credit Spread (bps)",
+                value=round(spd_bps, 2), min_value=0.0, max_value=5000.0,
+                step=1.0, format="%.1f", key=f"cdss_{tid}_{sfx}")
+            extra["credit_spread"] = spd_val / 10000.0
+            q1, q2, _ = st.columns(3)
+            raw_rec = cl.get("recovery_rate", td.get("recovery_rate", 0.4))
+            try:
+                rec_pct = float(raw_rec) * 100
+            except (TypeError, ValueError):
+                rec_pct = 40.0
+            rec_val = q1.number_input("Recovery Rate (%)",
+                value=round(rec_pct, 1), min_value=0.0, max_value=100.0,
+                step=1.0, format="%.1f", key=f"cdsr_{tid}_{sfx}")
+            extra["recovery_rate"] = rec_val / 100.0
+
+        elif inst == "InterestRateSwaption":
+            SWPN_TYPES = ["FIXED_FLOAT", "FLOAT_FIXED"]
+            ss3 = td.get("swap_subtype", "FIXED_FLOAT")
+            extra["swap_subtype"] = p2.selectbox(
+                "Swaption Type (FIXED_FLOAT=Payer, FLOAT_FIXED=Receiver)",
+                SWPN_TYPES,
+                index=SWPN_TYPES.index(ss3) if ss3 in SWPN_TYPES else 0,
+                key=f"swpnst_{tid}_{sfx}")
+            ol = next((l for l in td.get("legs", []) if l.get("leg_type") == "OPTION"), {})
+            vol_val = float(ol.get("vol", td.get("vol", 0.20)) or 0.20)
+            extra["vol"] = float(p3.number_input("Implied Vol (%)",
+                value=round(vol_val * 100, 2), min_value=0.0, max_value=200.0,
+                step=0.1, format="%.2f", key=f"swpnv_{tid}_{sfx}")) / 100.0
 
         # ── Legs ──────────────────────────────────────────────────────────────
         legs = td.get("legs",[])

@@ -94,8 +94,8 @@ def _price_bond(trade, curve_df: pd.DataFrame) -> Dict[str, Any]:
     npv_m1    = bond_m1.NPV()
     convexity = (npv_m1 + npv_p1 - 2.0 * npv_usd) / (npv_usd * 1e-8) if npv_usd != 0.0 else _NAN
 
-    return dict(fixed_npv=_NAN, float_npv=_NAN, swap_npv=npv_usd,
-                par_rate=ytm, clean_price=clean_pct, accrued=accrued,
+    return dict(fixed_npv=_NAN, float_npv=_NAN, swap_npv=sign * npv_usd,
+                par_rate=ytm, clean_price=sign * clean_pct, accrued=sign * accrued,
                 dv01=dv01, duration=duration, pv01=pv01, convexity=convexity,
                 vega=_NAN, theta=_NAN, delta=_NAN,
                 gamma=_NAN, rho=_NAN,

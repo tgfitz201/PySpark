@@ -123,18 +123,18 @@ def price_asset_swap(trade, curve_df: pd.DataFrame) -> Dict[str, Any]:
 
     dv01_raw  = (npv_up - npv_dn) / 2.0
     from models.enums import TradeDirection
-    sign      = -1.0 if trade.direction == TradeDirection.LONG else 1.0
-    dv01      = sign * abs(dv01_raw)
+    dir_sign  = 1.0 if trade.direction == TradeDirection.LONG else -1.0
+    dv01      = dir_sign * abs(dv01_raw) * (-1.0)   # bond DV01 negative for long
     duration  = dv01 / (notional * 1e-4) if notional > 0 else _NAN
     pv01      = dv01 / (notional / 1e6) if notional > 0 else _NAN
     convexity = (npv_up + npv_dn - 2.0 * bond_npv) / (bond_npv * (1e-4)**2) if bond_npv > 0 else _NAN
 
     return dict(
-        swap_npv    = asw_npv,
-        fixed_npv   = bond_npv,
-        float_npv   = asw_npv - bond_npv,
-        clean_price = clean_usd,
-        accrued     = accrued,
+        swap_npv    = dir_sign * asw_npv,
+        fixed_npv   = dir_sign * bond_npv,
+        float_npv   = dir_sign * (asw_npv - bond_npv),
+        clean_price = dir_sign * clean_usd,
+        accrued     = dir_sign * accrued,
         par_rate    = ytm,
         dv01        = dv01,
         duration    = duration,

@@ -156,8 +156,8 @@ def _price_callable_bond(trade, curve_df: pd.DataFrame) -> Dict[str, Any]:
     npv_m1    = cb_m1.NPV()
     convexity = (npv_m1 + npv_p1 - 2.0 * npv_usd) / (npv_usd * 1e-8) if npv_usd != 0.0 else _NAN
 
-    # ── Vega: d(NPV)/d(sigma) via +1% sigma bump ──────────────────────────
-    vol_bump = hw_vol + 0.01
+    # ── Vega: d(NPV)/d(sigma) via +1bp HW sigma bump ──────────────────────────
+    vol_bump = hw_vol + 1e-4
     hw_vg    = ql.HullWhite(sofr, a=0.1, sigma=vol_bump)
     eng_vg   = ql.TreeCallableFixedRateBondEngine(hw_vg, 40)
     cb_vg    = ql.CallableFixedRateBond(
@@ -193,7 +193,7 @@ def _price_callable_bond(trade, curve_df: pd.DataFrame) -> Dict[str, Any]:
     # rho   = dV/dr per 1% parallel SOFR shift  (= DV01 × 100)
     rho   = sign * raw_dv01 * 100.0
 
-    return dict(fixed_npv=bullet_npv, float_npv=_NAN, swap_npv=npv_usd,
+    return dict(fixed_npv=sign * bullet_npv, float_npv=_NAN, swap_npv=sign * npv_usd,
                 par_rate=ytm, clean_price=clean_usd, accrued=accrued,
                 dv01=dv01, duration=duration, pv01=pv01, convexity=convexity,
                 vega=vega, theta=theta, delta=option_value,
@@ -444,9 +444,9 @@ def _price_convertible_bond(trade, curve_df: pd.DataFrame) -> Dict[str, Any]:
             ) / 365.0   # per calendar day
 
     return dict(
-        swap_npv    = npv_usd,
-        clean_price = clean_usd,
-        accrued     = accrued,
+        swap_npv    = sign * npv_usd,
+        clean_price = sign * clean_usd,
+        accrued     = sign * accrued,
         par_rate    = ytm,
         dv01        = dv01,
         duration    = duration,
@@ -457,7 +457,7 @@ def _price_convertible_bond(trade, curve_df: pd.DataFrame) -> Dict[str, Any]:
         theta       = theta,
         gamma       = equity_delta,   # dV/dS: equity sensitivity of the convertible
         rho         = rho,
-        fixed_npv   = straight_npv,
+        fixed_npv   = sign * straight_npv,
         float_npv   = option_value,
         cr01        = _NAN,
         jump_to_default = _NAN,
@@ -550,9 +550,9 @@ def _price_sinking_fund_bond(trade, curve_df: pd.DataFrame) -> Dict[str, Any]:
     convexity_val = (npv_up + npv_dn - 2 * npv_usd) / (npv_usd * (1e-4) ** 2) if npv_usd > 0 else _NAN
 
     return dict(
-        swap_npv    = npv_usd,
-        clean_price = clean_usd,
-        accrued     = accrued,
+        swap_npv    = sign * npv_usd,
+        clean_price = sign * clean_usd,
+        accrued     = sign * accrued,
         par_rate    = ytm,
         dv01        = dv01,
         duration    = duration,

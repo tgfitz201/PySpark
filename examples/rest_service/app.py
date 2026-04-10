@@ -134,8 +134,17 @@ def cache_clear() -> Dict[str, Any]:
 
 @app.on_event("startup")
 def _warm_cache():
-    """Pre-build the yield curve on startup so the first pricing request is fast."""
+    """Pre-build the yield curve on startup so the first pricing request is fast.
+    Auto-seeds the DB with synthetic trades when empty."""
     _get_curve_df()   # builds and caches the curve; trade cache warms on first access
+    repo = _get_repo()
+    try:
+        if repo.count() == 0:
+            from manage_trades import populate_trades
+            trades = populate_trades()
+            repo.upsert_many(trades)
+    finally:
+        repo.close()
 
 
 # ── Health ────────────────────────────────────────────────────────────────────

@@ -51,8 +51,21 @@ def _price_callable_bond(trade, curve_df: pd.DataFrame) -> Dict[str, Any]:
     notional    = bl.notional
     coupon_rate = bl.coupon_rate
     strike      = ol.strike      # % of par (1.00 = par)
-    hw_vol      = ol.vol         # HullWhite sigma (normal vol)
     call_type   = trade.call_type  # "CALLABLE" or "PUTABLE"
+
+    # HullWhite σ: derive from swaption vol surface (normal vol ≈ lognormal_vol × par_rate)
+    # expiry = years to first call; tenor = remaining tenor after first call
+    from models.market_data import MarketDataCache
+    mkt = MarketDataCache().get_or_create(val_dt)
+    expiry_y = max(0.08, (ol.start_date - val_dt).days / 365.0)
+    bond_tenor_y = max(1.0, (bl.end_date - bl.start_date).days / 365.0)
+    remain_y = max(1.0, bond_tenor_y - expiry_y)
+    surf_vol = mkt.get_swaption_vol(expiry_y, remain_y)
+    if surf_vol > 0:
+        par_rate_approx = mkt._interp(mkt.par_rates, bond_tenor_y)
+        hw_vol = max(0.005, surf_vol * par_rate_approx)  # lognormal→normal conversion
+    else:
+        hw_vol = ol.vol  # fall back to stored leg vol
 
     schedule = ql.Schedule(start_dt, mat_dt, ql.Period(freq), calendar,
                            bdc, bdc, ql.DateGeneration.Backward, False)
@@ -219,8 +232,21 @@ def _price_convertible_bond(trade, curve_df: pd.DataFrame) -> Dict[str, Any]:
     conv_price    = getattr(ol, "strike", stock_price * 1.25)
     eq_vol        = getattr(ol, "vol", 0.25)
     div_yield     = getattr(ol, "dividend_yield", 0.013)
-    credit_spread = getattr(ol, "spread", getattr(ol, "credit_spread", 0.01))
     conversion_ratio = notional / conv_price if conv_price > 0 else 1.0
+
+    # Credit spread from market data (term-structure aware)
+    from models.market_data import MarketDataCache, TICKER_TO_ENTITY
+    mkt       = MarketDataCache().get_or_create(val_dt)
+    ticker    = getattr(ol, "underlying_ticker", None) or getattr(ol, "ticker", "")
+    entity    = TICKER_TO_ENTITY.get(ticker, "")
+    tenor_y   = trade.tenor_y or max(1, (bl.end_date - bl.start_date).days // 365)
+    if entity:
+        credit_spread = mkt.get_credit_spread(entity, tenor_y)
+    else:
+        # Fall back to leg spread field, then a conservative IG default
+        credit_spread = getattr(ol, "spread", getattr(ol, "credit_spread", 0.008))
+        if credit_spread == 0.0:
+            credit_spread = 0.008  # 80bps fallback for unknown issuer
 
     schedule = ql.Schedule(start_dt, mat_dt, ql.Period(freq), calendar,
                            bdc, bdc, ql.DateGeneration.Backward, False)

@@ -6,7 +6,7 @@ Public API for the trade model package.
 
 from models.enums import TradeDirection, LegType, OptionType, ExerciseType
 from models.leg import (BaseLeg, FixedLeg, FloatLeg, OptionLeg, EquityLeg,
-                        CreditLeg, CDSPremiumLeg, CDSProtectionLeg, EquityOptionLeg)
+                        CreditLeg, CDSPremiumLeg, CDSProtectionLeg, EquityOptionLeg, CapFloorLeg)
 from models.trade_reference import TradeReference
 from models.trade_base import TradeBase
 from models.interest_rate_swap import InterestRateSwap
@@ -19,6 +19,7 @@ from models.equity_option import EquityOptionTrade
 from models.interest_rate_swaption import InterestRateSwaption
 from models.optionable_bond import OptionableBond
 from models.asset_swap import AssetSwap
+from models.cap_floor import CapFloor
 from models.pricing_result import PricingResult
 from models.market_data import MarketDataSnapshot, MarketDataCache, make_default_snapshot
 
@@ -27,13 +28,13 @@ __all__ = [
     "TradeDirection", "LegType", "OptionType", "ExerciseType",
     # legs
     "BaseLeg", "FixedLeg", "FloatLeg", "OptionLeg", "EquityLeg",
-    "CreditLeg", "CDSPremiumLeg", "CDSProtectionLeg", "EquityOptionLeg",
+    "CreditLeg", "CDSPremiumLeg", "CDSProtectionLeg", "EquityOptionLeg", "CapFloorLeg",
     # reference
     "TradeReference",
     # trades
     "TradeBase", "InterestRateSwap", "CrossCurrencySwap",
     "Bond", "AssetSwap", "OptionableBond", "OptionTrade", "InterestRateSwaption", "EquitySwap", "CreditDefaultSwap",
-    "EquityOptionTrade",
+    "EquityOptionTrade", "CapFloor",
     # pricing result
     "PricingResult",
     # market data

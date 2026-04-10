@@ -38,6 +38,7 @@ INST_ICONS = {
     "EquitySwap": "📈",
     "CDS": "🛡️",              # CreditDefaultSwap registry key
     "EquityOption": "🎯",     # EquityOptionTrade registry key
+    "CapFloor": "🏦",         # CapFloor registry key
 }
 
 # leg_type -> (rate_field, display_multiplier, unit_label)
@@ -49,6 +50,7 @@ RATE_MAP: Dict[str,tuple] = {
     "EQUITY_OPTION":("vol",           100,    "Vol%"),
     "CREDIT":       ("credit_spread", 10000,  "Sprd bps"),
     "EQUITY":       ("dividend_yield",100,    "DivYld%"),
+    "CAP_FLOOR":    ("strike",        100,    "Strike%"),
 }
 
 FREQ_OPTS = ["ANNUAL","SEMIANNUAL","QUARTERLY","MONTHLY"]

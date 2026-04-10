@@ -163,6 +163,11 @@ CREATE TABLE IF NOT EXISTS AssetSwap (
     isin      TEXT    DEFAULT '',
     par_price REAL    DEFAULT 100.0
 );
+CREATE TABLE IF NOT EXISTS CapFloor (
+    trade_id       TEXT PRIMARY KEY REFERENCES TradeBase(trade_id) ON DELETE CASCADE,
+    tenor_y        INTEGER DEFAULT 0,
+    cap_floor_type TEXT    DEFAULT 'CAP'
+);
 
 CREATE TABLE IF NOT EXISTS BaseLeg (
     leg_id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -248,6 +253,14 @@ CREATE TABLE IF NOT EXISTS EquityOptionLeg (
     n_steps           INTEGER DEFAULT 200,
     lot_size          INTEGER DEFAULT 100
 );
+CREATE TABLE IF NOT EXISTS CapFloorLeg (
+    leg_id         INTEGER PRIMARY KEY REFERENCES BaseLeg(leg_id) ON DELETE CASCADE,
+    cap_floor_type TEXT    DEFAULT 'CAP',
+    strike         REAL    DEFAULT 0.05,
+    index_name     TEXT    DEFAULT 'SOFR3M',
+    index_tenor_m  INTEGER DEFAULT 3,
+    vol_type       TEXT    DEFAULT 'LOGNORMAL'
+);
 
 CREATE TABLE IF NOT EXISTS PricingResult (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -308,6 +321,7 @@ _TRADE_TYPE_TO_SUBTABLE: Dict[str, str] = {
     "EquitySwap":        "EquitySwap",
     "CDS":               "CreditDefaultSwap",
     "EquityOption":      "EquityOptionTrade",
+    "CapFloor":          "CapFloor",
 }
 
 # Leg type → subclass table name (only types with extra tables)
@@ -318,6 +332,7 @@ _LEG_TYPE_TO_SUBTABLE: Dict[str, str] = {
     "EQUITY":        "EquityLeg",
     "CREDIT":        "CreditLeg",
     "EQUITY_OPTION": "EquityOptionLeg",
+    "CAP_FLOOR":     "CapFloorLeg",
 }
 
 
@@ -420,6 +435,14 @@ def _row_to_leg(row: dict):
             n_steps=int(row.get("n_steps") or 200),
             lot_size=int(row.get("lot_size") or 100),
         )
+    if leg_type == "CAP_FLOOR":
+        from models.leg import CapFloorLeg
+        return CapFloorLeg(
+            **common,
+            cap_floor_type=row.get("cfl_cap_floor_type") or "CAP",
+            strike=float(row.get("cfl_strike") or 0.05),
+            vol_type=row.get("cfl_vol_type") or "LOGNORMAL",
+        )
     # BOND and any unrecognised types
     return BaseLeg(**common)
 
@@ -446,14 +469,18 @@ SELECT
     eol.strike AS eol_strike, eol.option_type AS eol_option_type,
     eol.exercise_type AS eol_exercise_type, eol.vol AS eol_vol,
     eol.dividend_yield AS eol_dividend_yield, eol.risk_free_rate,
-    eol.pricing_model, eol.n_steps, eol.lot_size
+    eol.pricing_model, eol.n_steps, eol.lot_size,
+    cfl.cap_floor_type AS cfl_cap_floor_type, cfl.strike AS cfl_strike,
+    cfl.index_name AS cfl_index_name, cfl.index_tenor_m AS cfl_index_tenor_m,
+    cfl.vol_type AS cfl_vol_type
 FROM BaseLeg bl
-LEFT JOIN FixedLeg fl  ON bl.leg_id = fl.leg_id
-LEFT JOIN FloatLeg fll ON bl.leg_id = fll.leg_id
-LEFT JOIN OptionLeg ol ON bl.leg_id = ol.leg_id
-LEFT JOIN EquityLeg el ON bl.leg_id = el.leg_id
-LEFT JOIN CreditLeg cl ON bl.leg_id = cl.leg_id
+LEFT JOIN FixedLeg fl       ON bl.leg_id = fl.leg_id
+LEFT JOIN FloatLeg fll      ON bl.leg_id = fll.leg_id
+LEFT JOIN OptionLeg ol      ON bl.leg_id = ol.leg_id
+LEFT JOIN EquityLeg el      ON bl.leg_id = el.leg_id
+LEFT JOIN CreditLeg cl      ON bl.leg_id = cl.leg_id
 LEFT JOIN EquityOptionLeg eol ON bl.leg_id = eol.leg_id
+LEFT JOIN CapFloorLeg cfl   ON bl.leg_id = cfl.leg_id
 WHERE bl.trade_id = ?
 ORDER BY bl.leg_index
 """
@@ -670,6 +697,13 @@ class TradeRepository:
                      getattr(trade, "isin", "") or "",
                      getattr(trade, "par_price", 100.0))
                 )
+            elif subtable == "CapFloor":
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO CapFloor (trade_id, tenor_y, cap_floor_type) VALUES (?, ?, ?)",
+                    (trade.trade_id,
+                     getattr(trade, "tenor_y", 0),
+                     getattr(trade, "cap_floor_type", "CAP")),
+                )
 
             # 3. Refresh legs
             self._conn.execute("DELETE FROM BaseLeg WHERE trade_id = ?", (trade_id,))
@@ -801,6 +835,18 @@ class TradeRepository:
                          getattr(leg, "n_steps", 200),
                          getattr(leg, "lot_size", 100)),
                     )
+                elif lt == "CAP_FLOOR":
+                    self._conn.execute(
+                        """INSERT OR REPLACE INTO CapFloorLeg
+                           (leg_id, cap_floor_type, strike, index_name, index_tenor_m, vol_type)
+                           VALUES (?, ?, ?, ?, ?, ?)""",
+                        (leg_id,
+                         getattr(leg, "cap_floor_type", "CAP"),
+                         getattr(leg, "strike", 0.05),
+                         getattr(leg, "index_name", "SOFR3M"),
+                         getattr(leg, "index_tenor_m", 3),
+                         getattr(leg, "vol_type", "LOGNORMAL")),
+                    )
 
     def upsert_many(self, trades: list) -> int:
         """Bulk upsert; returns count."""
@@ -930,6 +976,13 @@ class TradeRepository:
                 tenor_y=int(sub.get("tenor_y") or 0),
                 isin=sub.get("isin") or None,
                 par_price=float(sub.get("par_price") or 100.0),
+            )
+        if trade_type == "CapFloor":
+            from models.cap_floor import CapFloor
+            return CapFloor(
+                **common,
+                tenor_y=int(sub.get("tenor_y") or 0),
+                cap_floor_type=sub.get("cap_floor_type") or "CAP",
             )
 
         # Fallback: try generic fromJson path via old trades table

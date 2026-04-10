@@ -49,6 +49,7 @@ class Bond(TradeBase, trade_type="Bond"):
 
     tenor_y: int          = 0
     isin:    Optional[str] = None
+    issuer:  str           = ""   # credit entity name; "" = risk-free (government bond)
 
     @property
     def bond_leg(self) -> BaseLeg:
@@ -72,6 +73,7 @@ class Bond(TradeBase, trade_type="Bond"):
             },
             "isin": self.isin,
             "tenor_y": self.tenor_y,
+            "issuer": self.issuer,
         }
 
     def price(self, curve_df):

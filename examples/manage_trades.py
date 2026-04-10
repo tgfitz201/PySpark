@@ -47,13 +47,14 @@ from pyspark.sql.functions import pandas_udf
 from tabulate import tabulate
 
 from models import (TradeBase, BaseLeg, FixedLeg, FloatLeg, OptionLeg, EquityLeg,
-                    CreditLeg, CDSPremiumLeg, CDSProtectionLeg, EquityOptionLeg,
+                    CreditLeg, CDSPremiumLeg, CDSProtectionLeg, EquityOptionLeg, CapFloorLeg,
                     InterestRateSwap, InterestRateSwaption, Bond, AssetSwap,
-                    OptionableBond,
+                    OptionableBond, CapFloor,
                     OptionTrade, EquitySwap,
                     CreditDefaultSwap,
                     EquityOptionTrade, PricingResult,
                     TradeDirection, MarketDataSnapshot, MarketDataCache, make_default_snapshot)
+from models.market_data import issuer_from_isin
 from db import TradeRepository, MarketDataRepository
 
 
@@ -199,6 +200,7 @@ def make_bond_data(n: int = 50) -> List[Bond]:
         except ValueError:
             mat = date(issued.year + tenor_y, issued.month, issued.day - 1)
         direction = TradeDirection.LONG if random.random() < 0.5 else TradeDirection.SHORT
+        isin = f"US{i+1:09d}"
         bonds.append(Bond(
             trade_id=f"BOND-{i+1:04d}", book=random.choice(books),
             counterparty=random.choice(cptys), trader=random.choice(traders),
@@ -209,7 +211,8 @@ def make_bond_data(n: int = 50) -> List[Bond]:
                 frequency="SEMIANNUAL", redemption=100.0, settlement_days=2,
                 issue_date=issued,
             )],
-            isin=f"US{i+1:09d}",
+            isin=isin,
+            issuer=issuer_from_isin(isin),   # credit entity; "" for gov bonds by book override
         ))
     return bonds
 
@@ -718,6 +721,56 @@ _XCCY_PAIRS = [
     ("USD", "SGD", 1.34),
 ]
 
+def make_cap_floor_data(n: int = 50) -> List:
+    """Generate n interest-rate cap/floor trades (roughly 50/50 caps and floors)."""
+    import random
+    from models.cap_floor import CapFloor
+    from models.leg import CapFloorLeg
+    random.seed(42)
+
+    base    = VALUATION_DATE
+    tenors  = [1, 2, 3, 5, 7, 10]
+    faces   = [5_000_000, 10_000_000, 20_000_000, 50_000_000]
+    strikes = [0.03, 0.04, 0.045, 0.05, 0.055, 0.06]
+    cptys   = [f"CPTY-{c:02d}" for c in range(1, 11)]
+    traders = ["David Park", "Kevin Thompson"]
+
+    trades = []
+    for i in range(n):
+        tenor_y   = random.choice(tenors)
+        face      = float(random.choice(faces))
+        strike    = random.choice(strikes)
+        cf_type   = "CAP" if i % 2 == 0 else "FLOOR"
+        direction = TradeDirection.LONG if random.random() < 0.6 else TradeDirection.SHORT
+        try:
+            mat = date(base.year + tenor_y, base.month, base.day)
+        except ValueError:
+            mat = date(base.year + tenor_y, base.month, 28)
+
+        leg = CapFloorLeg(
+            leg_type="CAP_FLOOR", notional=face,
+            start_date=base, end_date=mat,
+            currency="USD", calendar="US_GOVT",
+            day_count="ACT/360", bdc="MOD_FOLLOWING",
+            frequency="QUARTERLY",
+            cap_floor_type=cf_type, strike=strike,
+            index_name="SOFR3M", index_tenor_m=3, vol_type="LOGNORMAL",
+        )
+        book = "IR-CAP" if cf_type == "CAP" else "IR-FLOOR"
+        trades.append(CapFloor(
+            trade_id=f"CF-{i+1:04d}",
+            book=book,
+            counterparty=random.choice(cptys),
+            trader=random.choice(traders),
+            valuation_date=base,
+            direction=direction,
+            tenor_y=tenor_y,
+            cap_floor_type=cf_type,
+            legs=[leg],
+        ))
+    return trades
+
+
 def make_xccy_irs_data(n: int = 50, valuation_date=None) -> list:
     """
     Generate cross-currency InterestRateSwap trades.
@@ -877,6 +930,8 @@ def populate_trades() -> List:
     for i, t in enumerate(bond_trades):
         t.trader = "Sarah Chen"
         t.book   = books_sc[i % 2]   # BOND-GOV or BOND-IG
+        if t.book == "BOND-GOV":
+            t.issuer = ""  # government bonds: no credit spread
     all_trades.extend(bond_trades)
 
     # AssetSwap — Sarah Chen (357)
@@ -951,6 +1006,12 @@ def populate_trades() -> List:
             t.trader = "Emily Rodriguez"
             t.book   = books_er[i % 3]
     all_trades.extend(eqopt_trades)
+
+    # CapFloor — David Park + Kevin Thompson (238 = 119 CAP + 119 FLOOR)
+    cf_trades = make_cap_floor_data(n=238)
+    for t in cf_trades:
+        pass   # book already set to IR-CAP / IR-FLOOR in generator
+    all_trades.extend(cf_trades)
 
     print(f"Generated {len(all_trades)} trades across {len(TRADERS)} traders")
     from collections import Counter

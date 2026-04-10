@@ -10,7 +10,10 @@ from pricing.utils import build_sofr_curve, _ql_maps, _NAN, _NAN_F, _NAN_ROW
 
 
 def _price_bond(trade, curve_df: pd.DataFrame) -> Dict[str, Any]:
-    """Price a FixedRateBond using conventions stored on bond_leg."""
+    """Price a FixedRateBond using conventions stored on bond_leg.
+    For corporate bonds (trade.issuer set) applies a credit spread overlay
+    on top of the SOFR discount curve.
+    """
     ql_freq, ql_dc, ql_bdc, ql_cal = _ql_maps()
 
     bl = trade.bond_leg
@@ -18,7 +21,20 @@ def _price_bond(trade, curve_df: pd.DataFrame) -> Dict[str, Any]:
     ql_val = ql.Date(val_dt.day, val_dt.month, val_dt.year)
     ql.Settings.instance().evaluationDate = ql_val
 
-    sofr     = build_sofr_curve(ql_val, curve_df)
+    # Build base SOFR curve; add credit spread overlay for corporate bonds
+    from models.market_data import MarketDataCache
+    mkt    = MarketDataCache().get_or_create(val_dt)
+    issuer = getattr(trade, "issuer", "") or ""
+    tenor_y = getattr(trade, "tenor_y", 0) or max(1, (bl.end_date - bl.start_date).days // 365)
+    if issuer:
+        cs = mkt.get_credit_spread(issuer, tenor_y)
+        risky_curve_df = curve_df.copy()
+        risky_curve_df["zero_rate"] = risky_curve_df["zero_rate"] + cs
+        discount_curve = build_sofr_curve(ql_val, risky_curve_df)
+    else:
+        discount_curve = build_sofr_curve(ql_val, curve_df)
+
+    sofr     = build_sofr_curve(ql_val, curve_df)   # kept for DV01 base
     calendar = ql_cal[bl.calendar]
     dc       = ql_dc[bl.day_count]
     bdc      = ql_bdc[bl.bdc]
@@ -34,7 +50,7 @@ def _price_bond(trade, curve_df: pd.DataFrame) -> Dict[str, Any]:
         bl.settlement_days, bl.notional, schedule,
         [bl.coupon_rate], dc, bdc, bl.redemption, issue_dt,
     )
-    bond.setPricingEngine(ql.DiscountingBondEngine(sofr))
+    bond.setPricingEngine(ql.DiscountingBondEngine(discount_curve))
 
     dirty_pct = bond.dirtyPrice()
     clean_pct = bond.cleanPrice()
@@ -46,9 +62,13 @@ def _price_bond(trade, curve_df: pd.DataFrame) -> Dict[str, Any]:
     except Exception:
         ytm = _NAN
 
-    # DV01: +1bp parallel shift
+    # DV01: +1bp parallel shift (shift the risky curve if corporate)
     bumped = curve_df.copy(); bumped["zero_rate"] += 1e-4
-    sofr_b = build_sofr_curve(ql_val, bumped)
+    if issuer:
+        bumped_r = bumped.copy(); bumped_r["zero_rate"] += cs  # already includes spread
+        sofr_b = build_sofr_curve(ql_val, bumped_r)
+    else:
+        sofr_b = build_sofr_curve(ql_val, bumped)
     bond_p1 = ql.FixedRateBond(
         bl.settlement_days, bl.notional, schedule,
         [bl.coupon_rate], dc, bdc, bl.redemption, issue_dt,
@@ -61,8 +81,10 @@ def _price_bond(trade, curve_df: pd.DataFrame) -> Dict[str, Any]:
     duration = dv01 / (bl.notional * 1e-4)
     pv01     = dv01 / bl.notional * 1_000_000
 
-    # Convexity: central difference (P_up + P_down - 2P) / (P * Δr²)
+    # Convexity: central difference
     bumped_m1 = curve_df.copy(); bumped_m1["zero_rate"] -= 1e-4
+    if issuer:
+        bumped_m1["zero_rate"] += cs
     sofr_m1   = build_sofr_curve(ql_val, bumped_m1)
     bond_m1   = ql.FixedRateBond(
         bl.settlement_days, bl.notional, schedule,

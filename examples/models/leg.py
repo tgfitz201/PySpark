@@ -372,3 +372,27 @@ class EquityOptionLeg(BaseLeg):
     pricing_model:     str   = "BLACK_SCHOLES"
     n_steps:           int   = 200
     lot_size:          int   = 100
+
+
+@dataclass
+class CapFloorLeg(BaseLeg):
+    """
+    Leg for an interest-rate cap or floor instrument.
+
+    A cap/floor is a strip of European caplets/floorlets on a floating rate
+    (e.g., SOFR3M). The leg defines the rate schedule and protection parameters.
+
+    Fields
+    ------
+    cap_floor_type : "CAP" or "FLOOR"
+    strike         : protection strike rate in decimal (0.05 = 5%)
+    index_name     : floating index name  (default "SOFR3M")
+    index_tenor_m  : index fixing tenor in months (default 3)
+    vol_type       : "NORMAL" or "LOGNORMAL"  (cap_floor_vols store lognormal)
+    """
+
+    cap_floor_type: str   = "CAP"           # CAP | FLOOR
+    strike:         float = 0.05
+    index_name:     str   = "SOFR3M"
+    index_tenor_m:  int   = 3
+    vol_type:       str   = "LOGNORMAL"
